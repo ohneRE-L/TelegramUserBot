@@ -52,6 +52,7 @@ public class TelegramUserBot extends org.telegram.telegrambots.bots.TelegramLong
     private Long waitingMediaForUserId = null; // Новая переменная состояния для отправки медиа
     private String waitingSendUserId = null; // Состояние для ожидания user_id при отправке сообщения
     private String waitingRemoveUserId = null; // Состояние для ожидания user_id при удалении
+    private boolean waitingSendAll = false; // Состояние для ожидания текста сообщения для отправки всем
     private final String USERS_FILE = "users.json";
 
     public TelegramUserBot(String token, String botUsername, long ownerId) {
@@ -117,6 +118,11 @@ public class TelegramUserBot extends org.telegram.telegrambots.bots.TelegramLong
                         sendUsersListInline(message.getChatId(), "remove");
                         return;
                     }
+                    if (text.equals("📢 Отправить всем")) {
+                        waitingSendAll = true;
+                        sendMessageWithOwnerKeyboard("Отправьте текст сообщения, которое будет отправлено всем пользователям:", message.getChatId());
+                        return;
+                    }
                     if (text.equals("📁 Массовая рассылка")) {
                         waitingBatchFile = true;
                         sendMessageWithOwnerKeyboard("Пожалуйста, отправьте файл с парами <user_id> <сообщение>.", message.getChatId());
@@ -127,7 +133,15 @@ public class TelegramUserBot extends org.telegram.telegrambots.bots.TelegramLong
                         waitingMediaForUserId = null;
                         waitingSendUserId = null;
                         waitingRemoveUserId = null;
+                        waitingSendAll = false;
                         sendMessageWithOwnerKeyboard("Операция отменена.", message.getChatId());
+                        return;
+                    }
+                    
+                    // Обработка состояния ожидания текста для отправки всем
+                    if (waitingSendAll && !text.startsWith("/")) {
+                        handleSendToAll(text, message.getChatId());
+                        waitingSendAll = false;
                         return;
                     }
                     
@@ -266,7 +280,7 @@ public class TelegramUserBot extends org.telegram.telegrambots.bots.TelegramLong
                     }
                     
                     // Если владелец отправил обычное сообщение (не команду и не в состоянии ожидания)
-                    if (!text.isEmpty() && waitingSendUserId == null && waitingRemoveUserId == null && !waitingBatchFile && waitingMediaForUserId == null) {
+                    if (!text.isEmpty() && waitingSendUserId == null && waitingRemoveUserId == null && !waitingBatchFile && waitingMediaForUserId == null && !waitingSendAll) {
                         sendMessageWithOwnerKeyboard("Используйте кнопки меню или команды для управления ботом.", message.getChatId());
                     }
                 }
@@ -302,6 +316,7 @@ public class TelegramUserBot extends org.telegram.telegrambots.bots.TelegramLong
                         help.append("Для владельца:\n");
                         help.append("/list — список всех пользователей с именами и ID\n");
                         help.append("/send <user_id> <сообщение> — отправить сообщение пользователю\n");
+                        help.append("/sendall <сообщение> — отправить сообщение всем пользователям\n");
                         help.append("/remove <user_id> — удалить пользователя из списка\n");
                         help.append("/sendbatch — отправить сообщение всем пользователям из файла (файл должен быть прикреплён)\n");
                         help.append("/sendmedia <user_id> — отправить фото или документ пользователю (следующим сообщением после команды)\n");
@@ -446,6 +461,18 @@ public class TelegramUserBot extends org.telegram.telegrambots.bots.TelegramLong
             case "/sendmedia":
                 // Эта команда обрабатывается в onUpdateReceived, здесь игнорируем
                 break;
+            case "/sendall":
+                if (parts.length < 2) {
+                    sendMessageWithOwnerKeyboard("Ошибка: используйте /sendall <message>", message.getChatId());
+                    return;
+                }
+                String messageText = text.substring("/sendall ".length()).trim();
+                if (messageText.isEmpty()) {
+                    sendMessageWithOwnerKeyboard("Ошибка: сообщение не может быть пустым.", message.getChatId());
+                    return;
+                }
+                handleSendToAll(messageText, message.getChatId());
+                break;
             default:
                 sendMessageWithOwnerKeyboard("Неизвестная команда. Используйте кнопки меню.", message.getChatId());
         }
@@ -571,16 +598,19 @@ public class TelegramUserBot extends org.telegram.telegrambots.bots.TelegramLong
         row1.add(new KeyboardButton("📋 Список пользователей"));
         row1.add(new KeyboardButton("✉️ Отправить сообщение"));
         KeyboardRow row2 = new KeyboardRow();
+        row2.add(new KeyboardButton("📢 Отправить всем"));
         row2.add(new KeyboardButton("📤 Отправить медиа"));
-        row2.add(new KeyboardButton("🗑️ Удалить пользователя"));
         KeyboardRow row3 = new KeyboardRow();
+        row3.add(new KeyboardButton("🗑️ Удалить пользователя"));
         row3.add(new KeyboardButton("📁 Массовая рассылка"));
-        row3.add(new KeyboardButton("❌ Отмена"));
+        KeyboardRow row4 = new KeyboardRow();
+        row4.add(new KeyboardButton("❌ Отмена"));
 
         List<KeyboardRow> rows = new ArrayList<>();
         rows.add(row1);
         rows.add(row2);
         rows.add(row3);
+        rows.add(row4);
 
         ReplyKeyboardMarkup keyboard = new ReplyKeyboardMarkup();
         keyboard.setKeyboard(rows);
@@ -692,6 +722,36 @@ public class TelegramUserBot extends org.telegram.telegrambots.bots.TelegramLong
             }
             waitingRemoveUserId = null;
         }
+    }
+    
+    private void handleSendToAll(String messageText, long ownerChatId) {
+        if (userIds.isEmpty()) {
+            sendMessageWithOwnerKeyboard("Список пользователей пуст. Некому отправить сообщение.", ownerChatId);
+            return;
+        }
+        
+        int success = 0;
+        int fail = 0;
+        StringBuilder report = new StringBuilder("📢 Результаты рассылки всем пользователям:\n\n");
+        
+        for (Long userId : userIds) {
+            try {
+                execute(SendMessage.builder()
+                        .chatId(String.valueOf(userId))
+                        .text(messageText)
+                        .build());
+                String userName = userNames.getOrDefault(userId, "<без имени>");
+                report.append("✅ ").append(userName).append(" (").append(userId).append(")\n");
+                success++;
+            } catch (TelegramApiException e) {
+                String userName = userNames.getOrDefault(userId, "<без имени>");
+                report.append("❌ ").append(userName).append(" (").append(userId).append(") — ошибка: ").append(e.getMessage()).append("\n");
+                fail++;
+            }
+        }
+        
+        report.append("\n📊 Итого: ").append(success).append(" успешно, ").append(fail).append(" ошибок из ").append(userIds.size()).append(" пользователей.");
+        sendMessageWithOwnerKeyboard(report.toString(), ownerChatId);
     }
 
     private void saveUsersToFile() {
