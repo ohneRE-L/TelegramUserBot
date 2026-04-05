@@ -64,6 +64,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
     private final String USERS_FILE = "users.json";
 
     public TelegramUserBot(String token, String botUsername, long ownerId) {
+        super(token);
         this.token = token;
         this.botUsername = botUsername;
         this.ownerId = ownerId;
@@ -81,7 +82,6 @@ public class TelegramUserBot extends TelegramLongPollingBot {
     }
 
     @Override public String getBotUsername() { return botUsername; }
-    @Override public String getBotToken() { return token; }
 
     @Override
     public void onUpdateReceived(Update update) {
@@ -131,27 +131,37 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         long chatId = message.getChatId();
         UserSession session = sessions.computeIfAbsent(ownerId, k -> new UserSession());
 
-        if (text.equals("📋 Список пользователей") || text.equals("/list")) {
-            handleListCommand(chatId);
-        } else if (text.equals("✉️ Отправить сообщение")) {
-            sendUsersListInline(chatId, "send");
-        } else if (text.equals("📢 Отправить всем")) {
-            session.setState(UserState.WAITING_FOR_MSG_SEND);
-            session.setTargetUserId(-1L);
-            sendMessage("Введите текст для рассылки всем пользователям:", chatId);
-        } else if (text.equals("📤 Отправить медиа")) {
-            sendUsersListInline(chatId, "media");
-        } else if (text.equals("🖼️ Рассылка фото")) {
-            session.setState(UserState.WAITING_FOR_PHOTO_ALL);
-            sendMessage("Отправьте фото с подписью (по желанию) для рассылки всем:", chatId);
-        } else if (text.equals("🗑️ Удалить пользователя")) {
-            sendUsersListInline(chatId, "remove");
-        } else if (text.equals("📁 Массовая рассылка")) {
-            session.setState(UserState.WAITING_FOR_BATCH_FILE);
-            sendMessage("Пожалуйста, отправьте .txt файл с форматом 'ID сообщение' на каждой строке:", chatId);
-        } else if (text.equals("❌ Отмена")) {
-            session.setState(UserState.START);
-            sendMessage("Действие отменено.", chatId);
+        switch (text) {
+            case "📋 Список пользователей":
+            case "/list":
+                handleListCommand(chatId);
+                break;
+            case "✉️ Отправить сообщение":
+                sendUsersListInline(chatId, "send");
+                break;
+            case "📢 Отправить всем":
+                session.setState(UserState.WAITING_FOR_MSG_SEND);
+                session.setTargetUserId(-1L);
+                sendMessage("Введите текст для рассылки всем пользователям:", chatId);
+                break;
+            case "📤 Отправить медиа":
+                sendUsersListInline(chatId, "media");
+                break;
+            case "🖼️ Рассылка фото":
+                session.setState(UserState.WAITING_FOR_PHOTO_ALL);
+                sendMessage("Отправьте фото с подписью (по желанию) для рассылки всем:", chatId);
+                break;
+            case "🗑️ Удалить пользователя":
+                sendUsersListInline(chatId, "remove");
+                break;
+            case "📁 Массовая рассылка":
+                session.setState(UserState.WAITING_FOR_BATCH_FILE);
+                sendMessage("Пожалуйста, отправьте .txt файл с форматом 'ID сообщение' на каждой строке:", chatId);
+                break;
+            case "❌ Отмена":
+                session.setState(UserState.START);
+                sendMessage("Действие отменено.", chatId);
+                break;
         }
     }
 
@@ -248,6 +258,14 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         }
     }
 
+    private void sleep50ms() {
+        try {
+            Thread.sleep(50);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private void handleSendToAllAsync(String text, long ownerChatId) {
         executor.submit(() -> {
             int success = 0, fail = 0;
@@ -255,7 +273,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                 try {
                     execute(SendMessage.builder().chatId(String.valueOf(userId)).text(text).parseMode("HTML").build());
                     success++;
-                    Thread.sleep(50);
+                    sleep50ms();
                 } catch (Exception e) {
                     log.error("Failed to send to {}: {}", userId, e.getMessage());
                     fail++;
@@ -282,7 +300,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                             .parseMode("HTML")
                             .build());
                     success++;
-                    Thread.sleep(50);
+                    sleep50ms();
                 } catch (Exception e) {
                     fail++;
                 }
@@ -297,7 +315,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         executor.submit(() -> {
             try {
                 org.telegram.telegrambots.meta.api.objects.File file = execute(new GetFile(doc.getFileId()));
-                URL url = new URL(file.getFileUrl(getBotToken()));
+                URL url = new URL(file.getFileUrl(token));
                 try (BufferedReader reader = new BufferedReader(new InputStreamReader(url.openStream()))) {
                     String line;
                     int success = 0, fail = 0;
@@ -311,7 +329,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                                 String msg = line.substring(spaceIdx + 1).trim();
                                 execute(SendMessage.builder().chatId(String.valueOf(uId)).text(msg).parseMode("HTML").build());
                                 success++;
-                                Thread.sleep(50);
+                                sleep50ms();
                             } catch (Exception e) { fail++; }
                         }
                     }
