@@ -75,7 +75,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
 
     private void deleteBotCommands() {
         try {
-            execute(new DeleteMyCommands());
+            execute(DeleteMyCommands.builder().build());
         } catch (TelegramApiException e) {
             log.error("Failed to delete bot commands", e);
         }
@@ -314,7 +314,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         Document doc = message.getDocument();
         executor.submit(() -> {
             try {
-                org.telegram.telegrambots.meta.api.objects.File file = execute(new GetFile(doc.getFileId()));
+                org.telegram.telegrambots.meta.api.objects.File file = execute(GetFile.builder().fileId(doc.getFileId()).build());
                 URL url = new URL(file.getFileUrl(token));
                 try (BufferedReader reader = new BufferedReader(new InputStreamReader(url.openStream()))) {
                     String line;
@@ -392,16 +392,13 @@ public class TelegramUserBot extends TelegramLongPollingBot {
             sendMessage("Список пользователей пуст.", chatId);
             return;
         }
-        InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
         userIds.stream().limit(50).forEach(id -> {
             String name = userNames.getOrDefault(id, String.valueOf(id));
-            InlineKeyboardButton btn = new InlineKeyboardButton();
-            btn.setText(name + " [" + id + "]");
-            btn.setCallbackData(action + "_" + id);
+            InlineKeyboardButton btn = InlineKeyboardButton.builder().text(name + " [" + id + "]").callbackData(action + "_" + id).build();
             rows.add(Collections.singletonList(btn));
         });
-        markup.setKeyboard(rows);
+        InlineKeyboardMarkup markup = InlineKeyboardMarkup.builder().keyboard(rows).build();
         try {
             execute(SendMessage.builder().chatId(String.valueOf(chatId)).text("Выберите пользователя:").replyMarkup(markup).build());
         } catch (Exception e) {
@@ -478,10 +475,10 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         row1.add(new KeyboardButton("Указать имя"));
         KeyboardRow row2 = new KeyboardRow();
         row2.add(new KeyboardButton("Моё имя"));
-        ReplyKeyboardMarkup kb = new ReplyKeyboardMarkup();
-        kb.setKeyboard(Arrays.asList(row1, row2));
-        kb.setResizeKeyboard(true);
-        return kb;
+        return ReplyKeyboardMarkup.builder()
+                .keyboard(Arrays.asList(row1, row2))
+                .resizeKeyboard(true)
+                .build();
     }
 
     private ReplyKeyboardMarkup getOwnerKeyboard() {
@@ -489,10 +486,10 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         KeyboardRow r2 = new KeyboardRow(); r2.add("📢 Отправить всем"); r2.add("🖼️ Рассылка фото");
         KeyboardRow r3 = new KeyboardRow(); r3.add("📤 Отправить медиа"); r3.add("🗑️ Удалить пользователя");
         KeyboardRow r4 = new KeyboardRow(); r4.add("📁 Массовая рассылка"); r4.add("❌ Отмена");
-        ReplyKeyboardMarkup kb = new ReplyKeyboardMarkup();
-        kb.setKeyboard(Arrays.asList(r1, r2, r3, r4));
-        kb.setResizeKeyboard(true);
-        return kb;
+        return ReplyKeyboardMarkup.builder()
+                .keyboard(Arrays.asList(r1, r2, r3, r4))
+                .resizeKeyboard(true)
+                .build();
     }
 
     private void markDirty() { dirty.set(true); }
