@@ -45,7 +45,8 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         WAITING_FOR_MSG_SEND,
         WAITING_FOR_MEDIA,
         WAITING_FOR_BATCH_FILE,
-        WAITING_FOR_PHOTO_ALL
+        WAITING_FOR_PHOTO_ALL,
+        WAITING_FOR_RENAME
     }
 
     public static class UserSession {
@@ -124,7 +125,8 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                 text.equals("📤 Отправить медиа") || text.equals("🗑️ Удалить пользователя") ||
                text.equals("📢 Отправить всем") || text.equals("🖼️ Рассылка фото") ||
                text.equals("📁 Массовая рассылка") || text.equals("❌ Отмена") ||
-               text.equals("🚫 Забанить") || text.equals("✅ Разбанить");
+               text.equals("🚫 Забанить") || text.equals("✅ Разбанить") ||
+               text.equals("✏️ Переименовать");
     }
 
     private void sendWelcomeMessage(Message message) {
@@ -168,6 +170,9 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                 break;
             case "✅ Разбанить":
                 sendBannedUsersListInline(chatId);
+                break;
+            case "✏️ Переименовать":
+                sendUsersListInline(chatId, "rename");
                 break;
             case "📁 Массовая рассылка":
                 session.setState(UserState.WAITING_FOR_BATCH_FILE);
@@ -229,6 +234,15 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                     session.setState(UserState.START);
                 } else if (fromId == ownerId) {
                     sendMessage("Пожалуйста, отправьте фото.", chatId);
+                }
+                break;
+            case WAITING_FOR_RENAME:
+                if (fromId == ownerId && !text.isEmpty()) {
+                    long targetId = session.getTargetUserId();
+                    userNames.put(targetId, text);
+                    markDirty();
+                    sendMessage("Пользователь " + targetId + " переименован в: " + text, chatId);
+                    session.setState(UserState.START);
                 }
                 break;
             case START:
@@ -413,6 +427,11 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                 bannedUsers.remove(uid);
                 markDirty();
                 sendMessage("Пользователь " + uid + " убран из бан-листа.", chatId);
+            } else if (data.startsWith("rename_")) {
+                long uid = Long.parseLong(data.substring(7));
+                session.setTargetUserId(uid);
+                session.setState(UserState.WAITING_FOR_RENAME);
+                sendMessage("Введите новое имя для пользователя " + uid + " (текущее: " + userNames.getOrDefault(uid, "не указано") + "):", chatId);
             }
         } catch (Exception e) {
             log.error("Callback error", e);
@@ -540,9 +559,10 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         KeyboardRow r2 = new KeyboardRow(); r2.add("📢 Отправить всем"); r2.add("🖼️ Рассылка фото");
         KeyboardRow r3 = new KeyboardRow(); r3.add("📤 Отправить медиа"); r3.add("🗑️ Удалить пользователя");
         KeyboardRow r4 = new KeyboardRow(); r4.add("🚫 Забанить"); r4.add("✅ Разбанить");
-        KeyboardRow r5 = new KeyboardRow(); r5.add("📁 Массовая рассылка"); r5.add("❌ Отмена");
+        KeyboardRow r5 = new KeyboardRow(); r5.add("📁 Массовая рассылка"); r5.add("✏️ Переименовать");
+        KeyboardRow r6 = new KeyboardRow(); r6.add("❌ Отмена");
         return ReplyKeyboardMarkup.builder()
-                .keyboard(Arrays.asList(r1, r2, r3, r4, r5))
+                .keyboard(Arrays.asList(r1, r2, r3, r4, r5, r6))
                 .resizeKeyboard(true)
                 .build();
     }
