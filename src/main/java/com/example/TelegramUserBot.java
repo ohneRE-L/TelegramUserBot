@@ -300,7 +300,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                     sendHelp(chatId, fromId == ownerId);
                 } else if (fromId != ownerId) {
                     forwardToOwner(message);
-                } else if (fromId == ownerId) {
+                } else {
                     UserRecord bestMatch = null;
                     for (UserRecord u : users.values()) {
                         if (u.name != null && !u.name.trim().isEmpty() 
@@ -492,7 +492,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
             return;
         }
 
-        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+        ArrayList<List<InlineKeyboardButton>> rows = new ArrayList<>();
         int limit = 50;
         int totalPages = (int) Math.ceil((double) list.size() / limit);
         int p = Math.max(0, Math.min(page, totalPages - 1));
