@@ -300,6 +300,27 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                     sendHelp(chatId, fromId == ownerId);
                 } else if (fromId != ownerId) {
                     forwardToOwner(message);
+                } else if (fromId == ownerId) {
+                    UserRecord bestMatch = null;
+                    for (UserRecord u : users.values()) {
+                        if (u.name != null && !u.name.trim().isEmpty() 
+                                && text.toLowerCase().startsWith(u.name.toLowerCase() + " ")) {
+                            if (bestMatch == null || u.name.length() > bestMatch.name.length()) {
+                                bestMatch = u;
+                            }
+                        }
+                    }
+                    if (bestMatch != null) {
+                        String msg = text.substring(bestMatch.name.length()).trim();
+                        if (!msg.isEmpty()) {
+                            sendToUser(bestMatch.id, msg);
+                            sendMessage("Сообщение отправлено пользователю " + bestMatch.name, chatId);
+                        } else {
+                            sendMessage("Вы не ввели текст сообщения для " + bestMatch.name, chatId);
+                        }
+                    } else {
+                        sendMessage("Команда не распознана. Используйте меню или введите '<Имя> <Сообщение>'.", chatId);
+                    }
                 }
                 break;
         }
