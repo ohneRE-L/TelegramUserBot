@@ -49,9 +49,9 @@ public class TelegramUserBot extends TelegramLongPollingBot {
     public static final String BTN_MY_NAME = "Моё имя";
 
     public static class UserRecord {
-        public long id;
-        public String name;
-        public boolean banned;
+        public final long id;
+        public volatile String name;
+        public volatile boolean banned;
 
         public UserRecord(long id, String name, boolean banned) {
             this.id = id;
@@ -93,7 +93,6 @@ public class TelegramUserBot extends TelegramLongPollingBot {
     }
 
     private final Map<Long, UserSession> sessions = new ConcurrentHashMap<>();
-    private final ExecutorService executor = Executors.newFixedThreadPool(10);
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     private final AtomicBoolean dirty = new AtomicBoolean(false);
     private final String USERS_FILE = "users.json";
@@ -401,7 +400,8 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         long chatId = query.getMessage().getChatId();
         UserSession session = sessions.computeIfAbsent(ownerId, k -> new UserSession());
         try {
-            execute(org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery.builder().callbackQueryId(query.getId()).build());
+            execute(org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery.builder()
+                    .callbackQueryId(query.getId()).build());
             if (data.startsWith("page_")) {
                 String[] parts = data.split("_");
                 String action = parts[1];
@@ -431,20 +431,25 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                         }
                     } else if (data.startsWith("ban_")) {
                         long uid = Long.parseLong(data.substring(4));
-                        if (users.containsKey(uid)) users.get(uid).banned = true;
+                        if (users.containsKey(uid))
+                            users.get(uid).banned = true;
                         markDirty();
                         sendMessage("Пользователь " + uid + " добавлен в бан-лист.", chatId);
+                        sendToUser(uid, "Ты забанен по причине того, что ты долбоеб");
                     } else if (data.startsWith("unban_")) {
                         long uid = Long.parseLong(data.substring(6));
-                        if (users.containsKey(uid)) users.get(uid).banned = false;
+                        if (users.containsKey(uid))
+                            users.get(uid).banned = false;
                         markDirty();
                         sendMessage("Пользователь " + uid + " убран из бан-листа.", chatId);
+                        sendToUser(uid, "Великий администатор решил тебя помиловать");
                     } else if (data.startsWith("rename_")) {
                         long uid = Long.parseLong(data.substring(7));
                         session.setTargetUserId(uid);
                         session.setState(UserState.WAITING_FOR_RENAME);
                         UserRecord u = users.get(uid);
-                        sendMessage("Введите новое имя для пользователя " + uid + " (текущее: " + ((u != null && !u.name.isEmpty()) ? u.name : "не указано") + "):", chatId);
+                        sendMessage("Введите новое имя для пользователя " + uid + " (текущее: "
+                                + ((u != null && !u.name.isEmpty()) ? u.name : "не указано") + "):", chatId);
                     }
                 }
             }
@@ -454,12 +459,19 @@ public class TelegramUserBot extends TelegramLongPollingBot {
     }
 
     private void sendUsersListInline(long chatId, Integer messageId, String action, int page) {
-        if (users.isEmpty()) {
+        List<UserRecord> list = new ArrayList<>();
+        if ("ban".equals(action) || "send".equals(action) || "media".equals(action)) {
+            users.values().stream().filter(u -> !u.banned).forEach(list::add);
+        } else {
+            list.addAll(users.values());
+        }
+
+        if (list.isEmpty()) {
             sendMessage("Список пользователей пуст.", chatId);
             return;
         }
+
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
-        List<UserRecord> list = new ArrayList<>(users.values());
         int limit = 50;
         int totalPages = (int) Math.ceil((double) list.size() / limit);
         int p = Math.max(0, Math.min(page, totalPages - 1));
@@ -635,8 +647,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         return ReplyKeyboardMarkup.builder()
                 .keyboard(Arrays.asList(
                         createRow(BTN_HELP, BTN_SET_NAME),
-                        createRow(BTN_MY_NAME)
-                ))
+                        createRow(BTN_MY_NAME)))
                 .resizeKeyboard(true)
                 .build();
     }
@@ -649,8 +660,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                         createRow(BTN_SEND_MEDIA, BTN_SEND_PHOTO_ALL),
                         createRow(BTN_BAN_USER, BTN_UNBAN_USER),
                         createRow(BTN_REMOVE_USER, BTN_RENAME_USER),
-                        createRow(BTN_CANCEL)
-                ))
+                        createRow(BTN_CANCEL)))
                 .resizeKeyboard(true)
                 .build();
     }
@@ -738,7 +748,6 @@ public class TelegramUserBot extends TelegramLongPollingBot {
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 log.info("Shutting down...");
                 bot.saveUsersToFile();
-                bot.executor.shutdown();
                 bot.scheduler.shutdown();
             }));
         } catch (Exception e) {
