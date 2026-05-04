@@ -143,7 +143,12 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                     users.put(fromId, new UserRecord(fromId, "", false));
                     log.info("New user registered: {} (ID: {})", message.getFrom().getFirstName(), fromId);
                     markDirty();
-                    sendWelcomeMessage(message);
+                    if (fromId != ownerId) {
+                        notifyOwner("🆕 Новый пользователь: " + message.getFrom().getFirstName() + " (" + fromId + ")", ownerId);
+                    }
+                    if (!message.hasText() || !message.getText().equals("/start")) {
+                        sendWelcomeMessage(message);
+                    }
                 }
                 UserSession session = sessions.computeIfAbsent(fromId, k -> new UserSession());
                 if (fromId == ownerId && message.hasText()
@@ -171,10 +176,6 @@ public class TelegramUserBot extends TelegramLongPollingBot {
     private void sendWelcomeMessage(Message message) {
         String welcome = "👋 Добро пожаловать!\nЯ бот для рассылки уведомлений. Используйте кнопки или /help для справки.";
         sendMessageWithKeyboard(welcome, message.getChatId(), true);
-        if (message.getChatId() != ownerId) {
-            notifyOwner("🆕 Новый пользователь: " + message.getFrom().getFirstName() + " (" + message.getFrom().getId()
-                    + ")", ownerId);
-        }
     }
 
     private void handleOwnerCommand(Message message) {
@@ -481,10 +482,10 @@ public class TelegramUserBot extends TelegramLongPollingBot {
 
     private void sendUsersListInline(long chatId, Integer messageId, String action, int page) {
         List<UserRecord> list = new ArrayList<>();
-        if ("ban".equals(action) || "send".equals(action) || "media".equals(action)) {
-            users.values().stream().filter(u -> !u.banned).forEach(list::add);
-        } else {
+        if ("remove".equals(action)) {
             list.addAll(users.values());
+        } else {
+            users.values().stream().filter(u -> !u.banned).forEach(list::add);
         }
 
         if (list.isEmpty()) {
