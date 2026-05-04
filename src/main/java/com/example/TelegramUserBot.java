@@ -25,6 +25,7 @@ import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.Properties;
 
 public class TelegramUserBot extends TelegramLongPollingBot {
     private static final Logger log = LoggerFactory.getLogger(TelegramUserBot.class);
@@ -52,11 +53,21 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         public final long id;
         public volatile String name;
         public volatile boolean banned;
+        public volatile String xuiUsername;
+        public volatile long expiryDate;
+        public volatile boolean notified;
 
         public UserRecord(long id, String name, boolean banned) {
+            this(id, name, banned, "", 0L, false);
+        }
+
+        public UserRecord(long id, String name, boolean banned, String xuiUsername, long expiryDate, boolean notified) {
             this.id = id;
             this.name = name;
             this.banned = banned;
+            this.xuiUsername = xuiUsername;
+            this.expiryDate = expiryDate;
+            this.notified = notified;
         }
     }
 
@@ -97,6 +108,10 @@ public class TelegramUserBot extends TelegramLongPollingBot {
     private final AtomicBoolean dirty = new AtomicBoolean(false);
     private final String USERS_FILE = "users.json";
 
+    private XuiApiClient xuiApiClient;
+    @SuppressWarnings("FieldCanBeLocal") // kept as field for potential future lifecycle management
+    private XuiExpiryChecker expiryChecker;
+    private final Properties configProps = new Properties();
     public TelegramUserBot(String token, String botUsername, long ownerId) {
         super(token);
         this.botUsername = botUsername;
@@ -104,6 +119,102 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         loadUsersFromFile();
         scheduler.scheduleAtFixedRate(this::saveIfDirty, 1, 1, TimeUnit.MINUTES);
         deleteBotCommands();
+        loadXuiConfiguration();
+    }
+
+    private void loadXuiConfiguration() {
+        try {
+            Path configPath = Paths.get("config.properties");
+            if (Files.exists(configPath)) {
+                try (InputStream is = Files.newInputStream(configPath)) {
+                    configProps.load(is);
+                }
+            } else {
+                try (InputStream is = getClass().getClassLoader().getResourceAsStream("config.properties")) {
+                    if (is != null) {
+                        configProps.load(is);
+                    }
+                }
+            }
+            
+            String panelUrl = configProps.getProperty("xui.panel.url");
+            String panelUsername = configProps.getProperty("xui.panel.username");
+            String panelPassword = configProps.getProperty("xui.panel.password");
+            String checkInterval = configProps.getProperty("xui.check.interval.hours", "6");
+            String notifyDays = configProps.getProperty("xui.notify.days", "3,1,0");
+            String inboundPortStr = configProps.getProperty("xui.inbound.port");
+            int inboundPort = (inboundPortStr != null && !inboundPortStr.isBlank())
+                    ? Integer.parseInt(inboundPortStr.trim()) : -1;
+            
+            if (panelUrl != null && panelUsername != null && panelPassword != null) {
+                xuiApiClient = new XuiApiClient(panelUrl, panelUsername, panelPassword, inboundPort);
+                expiryChecker = new XuiExpiryChecker(this, xuiApiClient, 
+                    Integer.parseInt(checkInterval), notifyDays);
+                expiryChecker.start();
+                log.info("3x-ui integration initialized (inbound port filter: {})",
+                         inboundPort == -1 ? "all" : inboundPort);
+            } else {
+                log.warn("3x-ui configuration missing, expiry checking disabled");
+            }
+        } catch (Exception e) {
+            log.error("Failed to load 3x-ui configuration", e);
+        }
+    }
+
+    public ScheduledExecutorService getScheduler() {
+        return scheduler;
+    }
+
+    public Long findTelegramIdByUsername(String xuiUsername) {
+        for (UserRecord user : users.values()) {
+            if (xuiUsername.equalsIgnoreCase(user.name) || 
+                xuiUsername.equalsIgnoreCase(user.xuiUsername)) {
+                return user.id;
+            }
+        }
+        return null;
+    }
+
+    public boolean isUserBanned(long tgId) {
+        UserRecord user = users.get(tgId);
+        return user != null && user.banned;
+    }
+
+
+    private void handleSyncCommand(long chatId) {
+        if (xuiApiClient == null) {
+            sendMessage("❌ 3x-ui интеграция не настроена", chatId);
+            return;
+        }
+        
+        sendMessage("🔄 Синхронизация с 3x-ui...", chatId);
+        
+        new Thread(() -> {
+            try {
+                Map<String, Long> clients = xuiApiClient.getAllClientsExpiry();
+                int synced = 0;
+                
+                for (Map.Entry<String, Long> entry : clients.entrySet()) {
+                    Long tgId = findTelegramIdByUsername(entry.getKey());
+                    if (tgId != null) {
+                        UserRecord user = users.get(tgId);
+                        if (user != null) {
+                            user.xuiUsername = entry.getKey();
+                            user.expiryDate = entry.getValue();
+                            synced++;
+                        }
+                    }
+                }
+                
+                markDirty();
+                final int finalSynced = synced;
+                scheduler.execute(() -> sendMessage(
+                        String.format("✅ Синхронизация завершена!\nСинхронизировано: %d пользователей", finalSynced), chatId));
+            } catch (Exception e) {
+                log.error("Sync failed", e);
+                scheduler.execute(() -> sendMessage("❌ Ошибка синхронизации: " + e.getMessage(), chatId));
+            }
+        }).start();
     }
 
     private void deleteBotCommands() {
@@ -170,7 +281,8 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                 text.equals(BTN_SEND_MEDIA) || text.equals(BTN_REMOVE_USER) ||
                 text.equals(BTN_SEND_ALL) || text.equals(BTN_SEND_PHOTO_ALL) ||
                 text.equals(BTN_CANCEL) || text.equals(BTN_BAN_USER) ||
-                text.equals(BTN_UNBAN_USER) || text.equals(BTN_RENAME_USER);
+                text.equals(BTN_UNBAN_USER) || text.equals(BTN_RENAME_USER) ||
+                text.equals("🔄 Синхронизация 3x-ui");
     }
 
     private void sendWelcomeMessage(Message message) {
@@ -182,6 +294,11 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         String text = message.getText();
         long chatId = message.getChatId();
         UserSession session = sessions.computeIfAbsent(ownerId, k -> new UserSession());
+
+        if (text.equals("🔄 Синхронизация 3x-ui")) {
+            handleSyncCommand(chatId);
+            return;
+        }
 
         switch (text) {
             case BTN_STATISTICS:
@@ -608,16 +725,22 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         sendMessage(sb.toString(), chatId);
     }
 
-    private void sendToUser(long userId, String text) {
+    public void sendToUser(long userId, String text) {
         try {
             execute(SendMessage.builder().chatId(String.valueOf(userId)).text(text).parseMode("HTML").build());
         } catch (TelegramApiException e) {
             log.error("Failed to send to user {}", userId, e);
-            if (e.getMessage().contains("blocked") || e.getMessage().contains("deactivated")) {
+            if (e.getMessage() != null &&
+                    (e.getMessage().contains("blocked") || e.getMessage().contains("deactivated"))) {
                 users.remove(userId);
                 markDirty();
             }
         }
+    }
+
+    /** Called by XuiExpiryChecker to send messages to users. */
+    public void sendMessageToUser(long userId, String message) {
+        sendToUser(userId, message);
     }
 
     private void sendMessage(String text, long chatId) {
@@ -646,7 +769,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
     }
 
     private void sendHelp(long chatId, boolean isOwner) {
-        String help = isOwner ? "👑 **Команды владельца:**\n" +
+        String help = isOwner ? "👑 Команды владельца:\n" +
                 "• Список пользователей — просмотр всех\n" +
                 "• Отправить сообщение — выбор через меню\n" +
                 "• Отправить всем — рассылка текстового сообщения\n" +
@@ -682,7 +805,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                         createRow(BTN_SEND_MEDIA, BTN_SEND_PHOTO_ALL),
                         createRow(BTN_BAN_USER, BTN_UNBAN_USER),
                         createRow(BTN_REMOVE_USER, BTN_RENAME_USER),
-                        createRow(BTN_CANCEL)))
+                        createRow("🔄 Синхронизация 3x-ui", BTN_CANCEL)))
                 .resizeKeyboard(true)
                 .build();
     }
@@ -705,6 +828,9 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                 obj.put("id", u.id);
                 obj.put("name", u.name);
                 obj.put("banned", u.banned);
+                obj.put("xuiUsername", u.xuiUsername);
+                obj.put("expiryDate", u.expiryDate);
+                obj.put("notified", u.notified);
                 arr.put(obj);
             });
             org.json.JSONObject root = new org.json.JSONObject().put("users", arr);
@@ -726,7 +852,11 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                 org.json.JSONObject obj = arr.getJSONObject(i);
                 long id = obj.getLong("id");
                 String name = obj.optString("name", "");
-                users.put(id, new UserRecord(id, name, obj.optBoolean("banned", false)));
+                boolean banned = obj.optBoolean("banned", false);
+                String xuiUsername = obj.optString("xuiUsername", "");
+                long expiryDate = obj.optLong("expiryDate", 0L);
+                boolean notified = obj.optBoolean("notified", false);
+                users.put(id, new UserRecord(id, name, banned, xuiUsername, expiryDate, notified));
             }
             log.info("Loaded {} users", users.size());
         } catch (Exception e) {
