@@ -55,20 +55,24 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         public volatile boolean banned;
         public volatile String xuiUsername;
         public volatile long expiryDate;
-        public volatile boolean notified;
+        public volatile int lastNotifiedDay;
 
         public UserRecord(long id, String name, boolean banned) {
-            this(id, name, banned, "", 0L, false);
+            this(id, name, banned, "", 0L, -1);
         }
 
-        public UserRecord(long id, String name, boolean banned, String xuiUsername, long expiryDate, boolean notified) {
+        public UserRecord(long id, String name, boolean banned, String xuiUsername, long expiryDate, int lastNotifiedDay) {
             this.id = id;
             this.name = name;
             this.banned = banned;
             this.xuiUsername = xuiUsername;
             this.expiryDate = expiryDate;
-            this.notified = notified;
+            this.lastNotifiedDay = lastNotifiedDay;
         }
+    }
+
+    public Map<Long, UserRecord> getUsers() {
+        return users;
     }
 
     private final Map<Long, UserRecord> users = new ConcurrentHashMap<>();
@@ -166,9 +170,15 @@ public class TelegramUserBot extends TelegramLongPollingBot {
     }
 
     public Long findTelegramIdByUsername(String xuiUsername) {
+        // First pass: try to find exact xuiUsername match (strongest link)
         for (UserRecord user : users.values()) {
-            if (xuiUsername.equalsIgnoreCase(user.name) || 
-                xuiUsername.equalsIgnoreCase(user.xuiUsername)) {
+            if (xuiUsername.equalsIgnoreCase(user.xuiUsername)) {
+                return user.id;
+            }
+        }
+        // Second pass: try to match by display name
+        for (UserRecord user : users.values()) {
+            if (xuiUsername.equalsIgnoreCase(user.name)) {
                 return user.id;
             }
         }
@@ -199,8 +209,12 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                     if (tgId != null) {
                         UserRecord user = users.get(tgId);
                         if (user != null) {
+                            if (user.expiryDate != entry.getValue()) {
+                                user.expiryDate = entry.getValue();
+                                user.lastNotifiedDay = -1; // Reset so they get notified for new dates
+                                log.info("Sync: Updated expiry and reset notification for {}", entry.getKey());
+                            }
                             user.xuiUsername = entry.getKey();
-                            user.expiryDate = entry.getValue();
                             synced++;
                         }
                     }
@@ -810,7 +824,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                 .build();
     }
 
-    private void markDirty() {
+    public void markDirty() {
         dirty.set(true);
     }
 
@@ -830,7 +844,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                 obj.put("banned", u.banned);
                 obj.put("xuiUsername", u.xuiUsername);
                 obj.put("expiryDate", u.expiryDate);
-                obj.put("notified", u.notified);
+                obj.put("lastNotifiedDay", u.lastNotifiedDay);
                 arr.put(obj);
             });
             org.json.JSONObject root = new org.json.JSONObject().put("users", arr);
@@ -855,8 +869,8 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                 boolean banned = obj.optBoolean("banned", false);
                 String xuiUsername = obj.optString("xuiUsername", "");
                 long expiryDate = obj.optLong("expiryDate", 0L);
-                boolean notified = obj.optBoolean("notified", false);
-                users.put(id, new UserRecord(id, name, banned, xuiUsername, expiryDate, notified));
+                int lastNotifiedDay = obj.optInt("lastNotifiedDay", -1);
+                users.put(id, new UserRecord(id, name, banned, xuiUsername, expiryDate, lastNotifiedDay));
             }
             log.info("Loaded {} users", users.size());
         } catch (Exception e) {

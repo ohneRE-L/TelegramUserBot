@@ -84,22 +84,29 @@ public class XuiApiClient {
                 reader.close();
                 
                 JSONObject json = new JSONObject(response.toString());
-                if (json.getBoolean("success")) {
-                    JSONArray arr = json.getJSONArray("obj");
-                    for (int i = 0; i < arr.length(); i++) {
-                        JSONObject item = arr.getJSONObject(i);
-                        // Filter by port if configured
-                        if (inboundPort != -1 && item.optInt("port", -1) != inboundPort) {
-                            continue;
-                        }
-                        if (item.has("clientStats")) {
-                            JSONArray clientStats = item.getJSONArray("clientStats");
-                            for (int j = 0; j < clientStats.length(); j++) {
-                                JSONObject client = clientStats.getJSONObject(j);
-                                clients.put(client.getString("email"), client.optLong("expiryTime", 0L));
+                if (json.optBoolean("success", false)) {
+                    JSONArray arr = json.optJSONArray("obj");
+                    if (arr != null) {
+                        for (int i = 0; i < arr.length(); i++) {
+                            JSONObject item = arr.optJSONObject(i);
+                            if (item == null) continue;
+                            
+                            // Filter by port if configured
+                            if (inboundPort != -1 && item.optInt("port", -1) != inboundPort) {
+                                continue;
                             }
-                        } else if (item.has("email")) {
-                            clients.put(item.getString("email"), item.optLong("expiryTime", 0L));
+                            
+                            JSONArray clientStats = item.optJSONArray("clientStats");
+                            if (clientStats != null) {
+                                for (int j = 0; j < clientStats.length(); j++) {
+                                    JSONObject client = clientStats.optJSONObject(j);
+                                    if (client != null && client.has("email")) {
+                                        clients.put(client.getString("email"), client.optLong("expiryTime", 0L));
+                                    }
+                                }
+                            } else if (item.has("email")) {
+                                clients.put(item.getString("email"), item.optLong("expiryTime", 0L));
+                            }
                         }
                     }
                     log.info("Loaded {} clients from 3x-ui (port filter: {})", clients.size(),

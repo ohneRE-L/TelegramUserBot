@@ -63,31 +63,50 @@ public class XuiExpiryChecker {
                 
                 // expiryTime = 0 means no expiry (unlimited)
                 if (expiryTime == 0) {
-                    log.info("Client {} has unlimited expiry (0), skipping.", xuiUsername);
                     continue;
                 }
                 
-                long daysUntilExpiry = TimeUnit.MILLISECONDS.toDays(expiryTime - now);
-                log.info("Client {}: expiryTime={}, daysUntilExpiry={}", xuiUsername, expiryTime, daysUntilExpiry);
+                long diff = expiryTime - now;
+                long daysUntilExpiry = TimeUnit.MILLISECONDS.toDays(diff);
+                int dayThreshold = (int) daysUntilExpiry;
                 
-                // Check if we need to notify for any of the configured days
-                boolean shouldNotify = false;
-                
-                for (int day : notifyDays) {
-                    if (daysUntilExpiry == day) {
-                        shouldNotify = true;
-                        break;
-                    }
+                // If the key is already expired (diff < 0 and more than a few minutes), don't send "today" warnings
+                if (diff < -60000) { 
+                    log.debug("Key for {} already expired, skipping notification.", xuiUsername);
+                    continue;
                 }
                 
-                if (shouldNotify) {
-                    // Find user by username
-                    Long tgId = bot.findTelegramIdByUsername(xuiUsername);
-                    if (tgId != null && !bot.isUserBanned(tgId)) {
-                        String message = generateNotificationMessage(xuiUsername, daysUntilExpiry);
-                        bot.sendMessageToUser(tgId, message);
-                        notifiedCount++;
-                        log.info("Sent expiry notification to {} ({} days left)", xuiUsername, daysUntilExpiry);
+                // Find user by username
+                Long tgId = bot.findTelegramIdByUsername(xuiUsername);
+                if (tgId != null) {
+                    TelegramUserBot.UserRecord user = bot.getUsers().get(tgId);
+                    if (user != null && !bot.isUserBanned(tgId)) {
+                        // Reset notification status if the expiry date has changed (e.g. renewal)
+                        if (user.expiryDate != expiryTime) {
+                            user.expiryDate = expiryTime;
+                            user.lastNotifiedDay = -1;
+                            bot.markDirty();
+                            log.info("Reset lastNotifiedDay for {} due to expiry date change", xuiUsername);
+                        }
+
+                        // Check if we need to notify for any of the configured days
+                        boolean isNotifyDay = false;
+                        for (int d : notifyDays) {
+                            if (dayThreshold == d) {
+                                isNotifyDay = true;
+                                break;
+                            }
+                        }
+
+                        // Only notify if it's the right day AND we haven't notified for THIS day yet
+                        if (isNotifyDay && user.lastNotifiedDay != dayThreshold) {
+                            log.info("Triggering notification for {} ({} days left)", xuiUsername, dayThreshold);
+                            String message = generateNotificationMessage(xuiUsername, dayThreshold);
+                            bot.sendMessageToUser(tgId, message);
+                            user.lastNotifiedDay = dayThreshold;
+                            bot.markDirty();
+                            notifiedCount++;
+                        }
                     }
                 }
             }
