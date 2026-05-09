@@ -15,6 +15,7 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboardMar
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardRow;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageReplyMarkup;
+import org.telegram.telegrambots.meta.api.methods.groupadministration.GetChat;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
 
@@ -44,6 +45,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
     public static final String BTN_RENAME_USER = "✏️ Переименовать";
     public static final String BTN_CANCEL = "❌ Отмена";
     public static final String BTN_STATISTICS = "📊 Статистика";
+    public static final String BTN_USER_INFO = "ℹ️ Информация о пользователе";
 
     public static final String BTN_HELP = "Помощь";
     public static final String BTN_SET_NAME = "Указать имя";
@@ -56,18 +58,16 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         public volatile String xuiUsername;
         public volatile long expiryDate;
         public volatile int lastNotifiedDay;
+        public volatile String tgUsername;
 
-        public UserRecord(long id, String name, boolean banned) {
-            this(id, name, banned, "", 0L, -1);
-        }
-
-        public UserRecord(long id, String name, boolean banned, String xuiUsername, long expiryDate, int lastNotifiedDay) {
+        public UserRecord(long id, String name, boolean banned, String xuiUsername, long expiryDate, int lastNotifiedDay, String tgUsername) {
             this.id = id;
             this.name = name;
             this.banned = banned;
             this.xuiUsername = xuiUsername;
             this.expiryDate = expiryDate;
             this.lastNotifiedDay = lastNotifiedDay;
+            this.tgUsername = tgUsername;
         }
     }
 
@@ -220,10 +220,28 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                     }
                 }
                 
+                int usernamesFetched = 0;
+                for (UserRecord user : users.values()) {
+                    if (user.tgUsername == null || user.tgUsername.isEmpty()) {
+                        try {
+                            Chat chat = execute(GetChat.builder().chatId(String.valueOf(user.id)).build());
+                            if (chat.getUserName() != null && !chat.getUserName().isEmpty()) {
+                                user.tgUsername = chat.getUserName();
+                                usernamesFetched++;
+                                markDirty();
+                            }
+                            Thread.sleep(150); // Sleep briefly to respect Telegram rate limits
+                        } catch (Exception ex) {
+                            // Ignored - probably user blocked the bot or chat doesn't exist
+                        }
+                    }
+                }
+                
                 markDirty();
                 final int finalSynced = synced;
+                final int finalFetched = usernamesFetched;
                 scheduler.execute(() -> sendMessage(
-                        String.format("✅ Синхронизация завершена!\nСинхронизировано: %d пользователей", finalSynced), chatId));
+                        String.format("✅ Синхронизация завершена!\nСинхронизировано ключей: %d\nВосстановлено никнеймов: %d", finalSynced, finalFetched), chatId));
             } catch (Exception e) {
                 log.error("Sync failed", e);
                 scheduler.execute(() -> sendMessage("❌ Ошибка синхронизации: " + e.getMessage(), chatId));
@@ -264,15 +282,27 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                     return; // Ignore banned users
                 }
 
+                String tgUser = message.getFrom().getUserName();
+                String tgUserStr = (tgUser != null && !tgUser.isEmpty()) ? tgUser : "";
+
                 if (u == null) {
-                    users.put(fromId, new UserRecord(fromId, "", false));
+                    users.put(fromId, new UserRecord(fromId, "", false, "", 0L, -1, tgUserStr));
                     log.info("New user registered: {} (ID: {})", message.getFrom().getFirstName(), fromId);
                     markDirty();
                     if (fromId != ownerId) {
-                        notifyOwner("🆕 Новый пользователь: " + message.getFrom().getFirstName() + " (" + fromId + ")", ownerId);
+                        String notificationName = message.getFrom().getFirstName();
+                        if (!tgUserStr.isEmpty()) {
+                            notificationName += " (@" + tgUserStr + ")";
+                        }
+                        notifyOwner("🆕 Новый пользователь: " + notificationName + " (" + fromId + ")", ownerId);
                     }
                     if (!message.hasText() || !message.getText().equals("/start")) {
                         sendWelcomeMessage(message);
+                    }
+                } else {
+                    if (!tgUserStr.equals(u.tgUsername)) {
+                        u.tgUsername = tgUserStr;
+                        markDirty();
                     }
                 }
                 UserSession session = sessions.computeIfAbsent(fromId, k -> new UserSession());
@@ -296,7 +326,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                 text.equals(BTN_SEND_ALL) || text.equals(BTN_SEND_PHOTO_ALL) ||
                 text.equals(BTN_CANCEL) || text.equals(BTN_BAN_USER) ||
                 text.equals(BTN_UNBAN_USER) || text.equals(BTN_RENAME_USER) ||
-                text.equals("🔄 Синхронизация 3x-ui");
+                text.equals(BTN_USER_INFO) || text.equals("🔄 Синхронизация 3x-ui");
     }
 
     private void sendWelcomeMessage(Message message) {
@@ -345,6 +375,9 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                 break;
             case BTN_UNBAN_USER:
                 sendBannedUsersListInline(chatId, null, 0);
+                break;
+            case BTN_USER_INFO:
+                sendUsersListInline(chatId, null, "info", 0);
                 break;
             case BTN_RENAME_USER:
                 sendUsersListInline(chatId, null, "rename", 0);
@@ -596,6 +629,21 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                         markDirty();
                         sendMessage("Пользователь " + uid + " убран из бан-листа.", chatId);
                         sendToUser(uid, "Великий администатор решил тебя помиловать");
+                    } else if (data.startsWith("info_")) {
+                        long uid = Long.parseLong(data.substring(5));
+                        UserRecord u = users.get(uid);
+                        if (u != null) {
+                            String uInfo = "ℹ️ Информация о пользователе:\n\n" +
+                                    "ID: <code>" + u.id + "</code>\n" +
+                                    "Имя: " + (u.name.isEmpty() ? "не указано" : u.name) + "\n" +
+                                    "Юзернейм TG: " + (u.tgUsername.isEmpty() ? "нет" : "@" + u.tgUsername) + "\n" +
+                                    "Юзернейм 3x-ui: " + (u.xuiUsername.isEmpty() ? "отсутствует" : u.xuiUsername) + "\n" +
+                                    "Истекает: " + (u.expiryDate > 0 ? new java.util.Date(u.expiryDate).toString() : "неограниченно") + "\n" +
+                                    "Бан: " + (u.banned ? "Да 🚫" : "Нет ✅");
+                            sendMessage(uInfo, chatId);
+                        } else {
+                            sendMessage("Пользователь не найден.", chatId);
+                        }
                     } else if (data.startsWith("rename_")) {
                         long uid = Long.parseLong(data.substring(7));
                         session.setTargetUserId(uid);
@@ -819,7 +867,8 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                         createRow(BTN_SEND_MEDIA, BTN_SEND_PHOTO_ALL),
                         createRow(BTN_BAN_USER, BTN_UNBAN_USER),
                         createRow(BTN_REMOVE_USER, BTN_RENAME_USER),
-                        createRow("🔄 Синхронизация 3x-ui", BTN_CANCEL)))
+                        createRow(BTN_USER_INFO, "🔄 Синхронизация 3x-ui"),
+                        createRow(BTN_CANCEL)))
                 .resizeKeyboard(true)
                 .build();
     }
@@ -845,6 +894,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                 obj.put("xuiUsername", u.xuiUsername);
                 obj.put("expiryDate", u.expiryDate);
                 obj.put("lastNotifiedDay", u.lastNotifiedDay);
+                obj.put("tgUsername", u.tgUsername);
                 arr.put(obj);
             });
             org.json.JSONObject root = new org.json.JSONObject().put("users", arr);
@@ -870,7 +920,8 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                 String xuiUsername = obj.optString("xuiUsername", "");
                 long expiryDate = obj.optLong("expiryDate", 0L);
                 int lastNotifiedDay = obj.optInt("lastNotifiedDay", -1);
-                users.put(id, new UserRecord(id, name, banned, xuiUsername, expiryDate, lastNotifiedDay));
+                String tgUsername = obj.optString("tgUsername", "");
+                users.put(id, new UserRecord(id, name, banned, xuiUsername, expiryDate, lastNotifiedDay, tgUsername));
             }
             log.info("Loaded {} users", users.size());
         } catch (Exception e) {
