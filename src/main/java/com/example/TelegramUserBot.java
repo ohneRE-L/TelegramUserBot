@@ -1,5 +1,6 @@
 package com.example;
 
+import org.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
@@ -9,7 +10,10 @@ import org.telegram.telegrambots.meta.api.methods.commands.DeleteMyCommands;
 import org.telegram.telegrambots.meta.api.methods.send.SendDocument;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.methods.send.SendPhoto;
+import org.telegram.telegrambots.meta.api.methods.send.SendVideo;
 import org.telegram.telegrambots.meta.api.objects.*;
+import java.io.File;
+import java.io.InputStream;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
@@ -27,6 +31,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.Properties;
+import java.util.stream.Collectors;
 
 public class TelegramUserBot extends TelegramLongPollingBot {
     private static final Logger log = LoggerFactory.getLogger(TelegramUserBot.class);
@@ -38,7 +43,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
     public static final String BTN_SEND_MSG = "✉️ Отправить сообщение";
     public static final String BTN_SEND_ALL = "📢 Отправить всем";
     public static final String BTN_SEND_MEDIA = "📤 Отправить медиа";
-    public static final String BTN_SEND_PHOTO_ALL = "🖼️ Рассылка фото";
+    public static final String BTN_SEND_MEDIA_ALL = "🖼️ Рассылка медиа всем";
     public static final String BTN_REMOVE_USER = "🗑️ Удалить пользователя";
     public static final String BTN_BAN_USER = "🚫 Забанить";
     public static final String BTN_UNBAN_USER = "✅ Разбанить";
@@ -46,6 +51,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
     public static final String BTN_CANCEL = "❌ Отмена";
     public static final String BTN_STATISTICS = "📊 Статистика";
     public static final String BTN_USER_INFO = "ℹ️ Информация о пользователе";
+    public static final String BTN_BACKUP = "💾 Бэкап панели 3x-ui";
 
     public static final String BTN_HELP = "Помощь";
     public static final String BTN_SET_NAME = "Указать имя";
@@ -82,7 +88,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         WAITING_FOR_NAME,
         WAITING_FOR_MSG_SEND,
         WAITING_FOR_MEDIA,
-        WAITING_FOR_PHOTO_ALL,
+        WAITING_FOR_BROADCAST_MEDIA,
         WAITING_FOR_RENAME
     }
 
@@ -113,7 +119,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
     private final String USERS_FILE = "users.json";
 
     private XuiApiClient xuiApiClient;
-    @SuppressWarnings("FieldCanBeLocal") // kept as field for potential future lifecycle management
+    @SuppressWarnings("FieldCanBeLocal")
     private XuiExpiryChecker expiryChecker;
     private final Properties configProps = new Properties();
     public TelegramUserBot(String token, String botUsername, long ownerId) {
@@ -146,17 +152,13 @@ public class TelegramUserBot extends TelegramLongPollingBot {
             String panelPassword = configProps.getProperty("xui.panel.password");
             String checkInterval = configProps.getProperty("xui.check.interval.hours", "6");
             String notifyDays = configProps.getProperty("xui.notify.days", "3,1,0");
-            String inboundPortStr = configProps.getProperty("xui.inbound.port");
-            int inboundPort = (inboundPortStr != null && !inboundPortStr.isBlank())
-                    ? Integer.parseInt(inboundPortStr.trim()) : -1;
-            
-            if (panelUrl != null && panelUsername != null && panelPassword != null) {
-                xuiApiClient = new XuiApiClient(panelUrl, panelUsername, panelPassword, inboundPort);
+            String apiToken = configProps.getProperty("xui.api.token");
+            if (panelUrl != null && (apiToken != null || (panelUsername != null && panelPassword != null))) {
+                xuiApiClient = new XuiApiClient(panelUrl, panelUsername, panelPassword, apiToken);
                 expiryChecker = new XuiExpiryChecker(this, xuiApiClient, 
                     Integer.parseInt(checkInterval), notifyDays);
                 expiryChecker.start();
-                log.info("3x-ui integration initialized (inbound port filter: {})",
-                         inboundPort == -1 ? "all" : inboundPort);
+                log.info("3x-ui integration initialized (discovery mode: all inbounds)");
             } else {
                 log.warn("3x-ui configuration missing, expiry checking disabled");
             }
@@ -170,13 +172,11 @@ public class TelegramUserBot extends TelegramLongPollingBot {
     }
 
     public Long findTelegramIdByUsername(String xuiUsername) {
-        // First pass: try to find exact xuiUsername match (strongest link)
         for (UserRecord user : users.values()) {
             if (xuiUsername.equalsIgnoreCase(user.xuiUsername)) {
                 return user.id;
             }
         }
-        // Second pass: try to match by display name
         for (UserRecord user : users.values()) {
             if (xuiUsername.equalsIgnoreCase(user.name)) {
                 return user.id;
@@ -196,52 +196,57 @@ public class TelegramUserBot extends TelegramLongPollingBot {
             sendMessage("❌ 3x-ui интеграция не настроена", chatId);
             return;
         }
-        
         sendMessage("🔄 Синхронизация с 3x-ui...", chatId);
-        
         new Thread(() -> {
             try {
-                Map<String, Long> clients = xuiApiClient.getAllClientsExpiry();
+                Map<String, Long> panelClients = xuiApiClient.getAllClientsExpiry();
                 int synced = 0;
-                
-                for (Map.Entry<String, Long> entry : clients.entrySet()) {
-                    Long tgId = findTelegramIdByUsername(entry.getKey());
-                    if (tgId != null) {
-                        UserRecord user = users.get(tgId);
-                        if (user != null) {
-                            if (user.expiryDate != entry.getValue()) {
-                                user.expiryDate = entry.getValue();
-                                user.lastNotifiedDay = -1; // Reset so they get notified for new dates
-                                log.info("Sync: Updated expiry and reset notification for {}", entry.getKey());
-                            }
-                            user.xuiUsername = entry.getKey();
+                int usernamesFetched = 0;
+                List<String> notFound = new ArrayList<>();
+                for (UserRecord user : users.values()) {
+                    boolean matched = false;
+                    if (user.xuiUsername != null && !user.xuiUsername.isEmpty()) {
+                        if (panelClients.containsKey(user.xuiUsername)) {
+                            user.expiryDate = panelClients.get(user.xuiUsername);
+                            user.lastNotifiedDay = -1;
                             synced++;
+                            matched = true;
                         }
                     }
-                }
-                
-                int usernamesFetched = 0;
-                for (UserRecord user : users.values()) {
+                    if (!matched && user.name != null && !user.name.isEmpty()) {
+                        if (panelClients.containsKey(user.name)) {
+                            user.expiryDate = panelClients.get(user.name);
+                            user.xuiUsername = user.name;
+                            user.lastNotifiedDay = -1;
+                            synced++;
+                            matched = true;
+                        }
+                    }
+                    if (!matched && !user.banned) {
+                        notFound.add(user.name.isEmpty() ? String.valueOf(user.id) : user.name);
+                    }
                     if (user.tgUsername == null || user.tgUsername.isEmpty()) {
                         try {
                             Chat chat = execute(GetChat.builder().chatId(String.valueOf(user.id)).build());
                             if (chat.getUserName() != null && !chat.getUserName().isEmpty()) {
                                 user.tgUsername = chat.getUserName();
                                 usernamesFetched++;
-                                markDirty();
                             }
-                            Thread.sleep(150); // Sleep briefly to respect Telegram rate limits
-                        } catch (Exception ex) {
-                            // Ignored - probably user blocked the bot or chat doesn't exist
-                        }
+                            Thread.sleep(200);
+                        } catch (Exception ignored) {}
                     }
                 }
-                
                 markDirty();
-                final int finalSynced = synced;
-                final int finalFetched = usernamesFetched;
-                scheduler.execute(() -> sendMessage(
-                        String.format("✅ Синхронизация завершена!\nСинхронизировано ключей: %d\nВосстановлено никнеймов: %d", finalSynced, finalFetched), chatId));
+                StringBuilder sb = new StringBuilder("✅ Синхронизация завершена!\n");
+                sb.append("Синхронизировано ключей: ").append(synced).append("\n");
+                sb.append("Восстановлено никнеймов: ").append(usernamesFetched);
+                if (!notFound.isEmpty()) {
+                    sb.append("\n\n⚠️ Не найдены в панели 3x-ui:");
+                    for (String name : notFound) sb.append("\n- ").append(name);
+                    sb.append("\n\n(Проверьте Email в панели у этих пользователей)");
+                }
+                final String report = sb.toString();
+                scheduler.execute(() -> sendMessage(report, chatId));
             } catch (Exception e) {
                 log.error("Sync failed", e);
                 scheduler.execute(() -> sendMessage("❌ Ошибка синхронизации: " + e.getMessage(), chatId));
@@ -279,7 +284,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
 
                 UserRecord u = users.get(fromId);
                 if (u != null && u.banned && fromId != ownerId) {
-                    return; // Ignore banned users
+                    return;
                 }
 
                 String tgUser = message.getFrom().getUserName();
@@ -323,10 +328,11 @@ public class TelegramUserBot extends TelegramLongPollingBot {
     private boolean isOwnerCommandButton(String text) {
         return text.equals(BTN_USERS_LIST) || text.equals(BTN_SEND_MSG) || text.equals(BTN_STATISTICS) ||
                 text.equals(BTN_SEND_MEDIA) || text.equals(BTN_REMOVE_USER) ||
-                text.equals(BTN_SEND_ALL) || text.equals(BTN_SEND_PHOTO_ALL) ||
+                text.equals(BTN_SEND_ALL) || text.equals(BTN_SEND_MEDIA_ALL) ||
                 text.equals(BTN_CANCEL) || text.equals(BTN_BAN_USER) ||
                 text.equals(BTN_UNBAN_USER) || text.equals(BTN_RENAME_USER) ||
-                text.equals(BTN_USER_INFO) || text.equals("🔄 Синхронизация 3x-ui");
+                text.equals(BTN_USER_INFO) || text.equals(BTN_BACKUP) ||
+                text.equals("🔄 Синхронизация 3x-ui");
     }
 
     private void sendWelcomeMessage(Message message) {
@@ -348,6 +354,9 @@ public class TelegramUserBot extends TelegramLongPollingBot {
             case BTN_STATISTICS:
                 handleStatisticsCommand(chatId);
                 break;
+            case BTN_BACKUP:
+                handleBackupCommand(chatId);
+                break;
             case BTN_USERS_LIST:
             case "/list":
                 handleListCommand(chatId);
@@ -363,9 +372,9 @@ public class TelegramUserBot extends TelegramLongPollingBot {
             case BTN_SEND_MEDIA:
                 sendUsersListInline(chatId, null, "media", 0);
                 break;
-            case BTN_SEND_PHOTO_ALL:
-                session.setState(UserState.WAITING_FOR_PHOTO_ALL);
-                sendMessage("Отправьте фото с подписью (по желанию) для рассылки всем:", chatId);
+            case BTN_SEND_MEDIA_ALL:
+                session.setState(UserState.WAITING_FOR_BROADCAST_MEDIA);
+                sendMessage("Пришлите фото или видео с подписью, которое нужно разослать всем:", chatId);
                 break;
             case BTN_REMOVE_USER:
                 sendUsersListInline(chatId, null, "remove", 0);
@@ -424,12 +433,12 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                     sendMessage("Пожалуйста, отправьте фото или документ (файл).", chatId);
                 }
                 break;
-            case WAITING_FOR_PHOTO_ALL:
-                if (fromId == ownerId && message.hasPhoto()) {
-                    handleSendPhotoToAllAsync(message, chatId);
+            case WAITING_FOR_BROADCAST_MEDIA:
+                if (fromId == ownerId && (message.hasPhoto() || message.hasVideo())) {
+                    handleBroadcastMedia(message);
                     session.setState(UserState.START);
                 } else if (fromId == ownerId) {
-                    sendMessage("Пожалуйста, отправьте фото.", chatId);
+                    sendMessage("Пожалуйста, отправьте фото или видео.", chatId);
                 }
                 break;
             case WAITING_FOR_RENAME:
@@ -520,19 +529,31 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         scheduleBatch(targetUsers, 0, text, null, null, ownerChatId, 0, 0);
     }
 
-    private void handleSendPhotoToAllAsync(Message message, long ownerChatId) {
-        List<PhotoSize> photos = message.getPhoto();
-        String fileId = photos.get(photos.size() - 1).getFileId();
+    private void handleBroadcastMedia(Message message) {
         String caption = message.getCaption();
-
-        List<UserRecord> targetUsers = new ArrayList<>();
-        users.values().stream().filter(u -> !u.banned).forEach(targetUsers::add);
-        if (targetUsers.isEmpty()) {
-            sendMessage("Нет пользователей для рассылки.", ownerChatId);
-            return;
+        List<UserRecord> targets = users.values().stream().filter(u -> !u.banned).collect(Collectors.toList());
+        
+        if (message.hasPhoto()) {
+            String fileId = message.getPhoto().get(message.getPhoto().size() - 1).getFileId();
+            sendMessage("Запускаю рассылку фото " + targets.size() + " пользователям...", ownerId);
+            for (UserRecord u : targets) {
+                try {
+                    execute(SendPhoto.builder().chatId(String.valueOf(u.id)).photo(new InputFile(fileId)).caption(caption).build());
+                } catch (Exception ignored) {}
+            }
+            sendMessage("✅ Рассылка фото завершена!", ownerId);
+        } else if (message.hasVideo()) {
+            String fileId = message.getVideo().getFileId();
+            sendMessage("Запускаю рассылку видео " + targets.size() + " пользователям...", ownerId);
+            for (UserRecord u : targets) {
+                try {
+                    execute(SendVideo.builder().chatId(String.valueOf(u.id)).video(new InputFile(fileId)).caption(caption).build());
+                } catch (Exception ignored) {}
+            }
+            sendMessage("✅ Рассылка видео завершена!", ownerId);
+        } else {
+            sendMessage("❌ Ошибка: вы не прислали фото или видео.", ownerId);
         }
-        sendMessage("🖼️ Рассылка фото запущена в фоне...", ownerChatId);
-        scheduleBatch(targetUsers, 0, null, fileId, caption, ownerChatId, 0, 0);
     }
 
     private void scheduleBatch(List<UserRecord> list, int index, String text, String fileId, String caption,
@@ -621,28 +642,61 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                             users.get(uid).banned = true;
                         markDirty();
                         sendMessage("Пользователь " + uid + " добавлен в бан-лист.", chatId);
-                        sendToUser(uid, "Ты забанен по причине того, что ты долбоеб");
+                        sendToUser(uid, "Ты забанен.");
                     } else if (data.startsWith("unban_")) {
                         long uid = Long.parseLong(data.substring(6));
                         if (users.containsKey(uid))
                             users.get(uid).banned = false;
                         markDirty();
                         sendMessage("Пользователь " + uid + " убран из бан-листа.", chatId);
-                        sendToUser(uid, "Великий администатор решил тебя помиловать");
+                        sendToUser(uid, "Ты помилован.");
                     } else if (data.startsWith("info_")) {
                         long uid = Long.parseLong(data.substring(5));
                         UserRecord u = users.get(uid);
                         if (u != null) {
+                            String trafficInfo = "";
+                            String clientLink = "";
+                            if (xuiApiClient != null && !u.xuiUsername.isEmpty()) {
+                                JSONObject traffic = xuiApiClient.getClientTraffic(u.xuiUsername);
+                                if (traffic != null && traffic.optBoolean("success")) {
+                                    JSONObject obj = traffic.optJSONObject("obj");
+                                    if (obj != null) {
+                                        long up = obj.optLong("up", 0);
+                                        long down = obj.optLong("down", 0);
+                                        trafficInfo = "\nТрафик: ↑" + formatTraffic(up) + " ↓" + formatTraffic(down);
+                                    }
+                                }
+                                String subLink = xuiApiClient.getSubscriptionUrl(u.xuiUsername);
+                                if (subLink != null) clientLink = "\n\n🔗 <b>Подписка:</b>\n<code>" + subLink + "</code>";
+                            }
+
                             String uInfo = "ℹ️ Информация о пользователе:\n\n" +
                                     "ID: <code>" + u.id + "</code>\n" +
                                     "Имя: " + (u.name.isEmpty() ? "не указано" : u.name) + "\n" +
                                     "Юзернейм TG: " + (u.tgUsername.isEmpty() ? "нет" : "@" + u.tgUsername) + "\n" +
-                                    "Юзернейм 3x-ui: " + (u.xuiUsername.isEmpty() ? "отсутствует" : u.xuiUsername) + "\n" +
+                                    "Юзернейм 3x-ui: " + (u.xuiUsername.isEmpty() ? "отсутствует" : u.xuiUsername) + 
+                                    trafficInfo + "\n" +
                                     "Истекает: " + (u.expiryDate > 0 ? new java.util.Date(u.expiryDate).toString() : "неограниченно") + "\n" +
-                                    "Бан: " + (u.banned ? "Да 🚫" : "Нет ✅");
-                            sendMessage(uInfo, chatId);
+                                    "Бан: " + (u.banned ? "Да 🚫" : "Нет ✅") +
+                                    clientLink;
+                            
+                            InlineKeyboardMarkup markup = InlineKeyboardMarkup.builder().keyboard(Collections.singletonList(
+                                Collections.singletonList(InlineKeyboardButton.builder().text("🔄 Сбросить трафик").callbackData("reset_traffic_" + uid).build())
+                            )).build();
+                            
+                            execute(SendMessage.builder().chatId(String.valueOf(chatId)).text(uInfo).parseMode("HTML").replyMarkup(markup).build());
                         } else {
                             sendMessage("Пользователь не найден.", chatId);
+                        }
+                    } else if (data.startsWith("reset_traffic_")) {
+                        long uid = Long.parseLong(data.substring(14));
+                        UserRecord u = users.get(uid);
+                        if (u != null && xuiApiClient != null && !u.xuiUsername.isEmpty()) {
+                            if (xuiApiClient.resetClientTraffic(u.xuiUsername)) {
+                                sendMessage("✅ Трафик для " + u.xuiUsername + " сброшен.", chatId);
+                            } else {
+                                sendMessage("❌ Не удалось сбросить трафик.", chatId);
+                            }
                         }
                     } else if (data.startsWith("rename_")) {
                         long uid = Long.parseLong(data.substring(7));
@@ -800,7 +854,6 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         }
     }
 
-    /** Called by XuiExpiryChecker to send messages to users. */
     public void sendMessageToUser(long userId, String message) {
         sendToUser(userId, message);
     }
@@ -864,13 +917,44 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                 .keyboard(Arrays.asList(
                         createRow(BTN_USERS_LIST, BTN_STATISTICS),
                         createRow(BTN_SEND_MSG, BTN_SEND_ALL),
-                        createRow(BTN_SEND_MEDIA, BTN_SEND_PHOTO_ALL),
+                        createRow(BTN_SEND_MEDIA, BTN_SEND_MEDIA_ALL),
                         createRow(BTN_BAN_USER, BTN_UNBAN_USER),
                         createRow(BTN_REMOVE_USER, BTN_RENAME_USER),
-                        createRow(BTN_USER_INFO, "🔄 Синхронизация 3x-ui"),
-                        createRow(BTN_CANCEL)))
+                        createRow(BTN_USER_INFO, BTN_BACKUP),
+                        createRow("🔄 Синхронизация 3x-ui", BTN_CANCEL)))
                 .resizeKeyboard(true)
                 .build();
+    }
+
+    private void handleBackupCommand(long chatId) {
+        if (xuiApiClient != null) {
+            sendMessage("⏳ Начинаю скачивание бэкапа...", chatId);
+            File dbFile = xuiApiClient.downloadDb();
+            if (dbFile != null && dbFile.exists()) {
+                try {
+                    execute(SendDocument.builder()
+                            .chatId(String.valueOf(chatId))
+                            .document(new InputFile(dbFile, "x-ui-backup.db"))
+                            .caption("📦 Полный бэкап базы данных (SQLite)")
+                            .build());
+                    if (!dbFile.delete()) {
+                        log.warn("Failed to delete temporary backup file: {}", dbFile.getAbsolutePath());
+                    }
+                } catch (TelegramApiException e) {
+                    log.error("Failed to send backup file", e);
+                    sendMessage("❌ Ошибка при отправке файла.", chatId);
+                }
+            } else {
+                sendMessage("❌ Не удалось получить файл бэкапа из панели.", chatId);
+            }
+        }
+    }
+
+    private String formatTraffic(long bytes) {
+        if (bytes < 1024) return bytes + " B";
+        int exp = (int) (Math.log(bytes) / Math.log(1024));
+        char pre = "KMGTPE".charAt(exp - 1);
+        return String.format("%.2f %cB", bytes / Math.pow(1024, exp), pre);
     }
 
     public void markDirty() {
