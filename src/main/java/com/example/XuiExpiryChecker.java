@@ -70,9 +70,9 @@ public class XuiExpiryChecker {
                 long daysUntilExpiry = TimeUnit.MILLISECONDS.toDays(diff);
                 int dayThreshold = (int) daysUntilExpiry;
                 
-                // If the key is already expired (diff < 0 and more than a few minutes), don't send "today" warnings
-                if (diff < -60000) { 
-                    log.debug("Key for {} already expired, skipping notification.", xuiUsername);
+                // If the key has been expired for more than 24 hours, don't ping them
+                if (diff < -86400000L) { 
+                    log.debug("Key for {} already expired >24h ago, skipping notification.", xuiUsername);
                     continue;
                 }
                 
