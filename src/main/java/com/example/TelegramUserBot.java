@@ -18,7 +18,7 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMa
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardRow;
-import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageReplyMarkup;
+
 import org.telegram.telegrambots.meta.api.methods.groupadministration.GetChat;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
@@ -52,10 +52,15 @@ public class TelegramUserBot extends TelegramLongPollingBot {
     public static final String BTN_STATISTICS = "📊 Статистика";
     public static final String BTN_USER_INFO = "ℹ️ Информация о пользователе";
     public static final String BTN_BACKUP = "💾 Бэкап панели 3x-ui";
+    // Main menu category buttons
+    public static final String BTN_MENU_USERS = "👥 Пользователи";
+    public static final String BTN_MENU_BROADCAST = "📢 Рассылка";
+    public static final String BTN_MENU_PANEL = "⚙️ Панель 3x-ui";
 
     public static final String BTN_HELP = "Помощь";
     public static final String BTN_SET_NAME = "Указать имя";
     public static final String BTN_MY_NAME = "Моё имя";
+    public static final String BTN_MY_KEYS = "🔑 Мои ключи";
 
     public static class UserRecord {
         public final long id;
@@ -153,8 +158,10 @@ public class TelegramUserBot extends TelegramLongPollingBot {
             String checkInterval = configProps.getProperty("xui.check.interval.hours", "6");
             String notifyDays = configProps.getProperty("xui.notify.days", "3,1,0");
             String apiToken = configProps.getProperty("xui.api.token");
+            int subPort = Integer.parseInt(configProps.getProperty("xui.sub.port", "10882"));
+            String subPath = configProps.getProperty("xui.sub.path", "/sub/");
             if (panelUrl != null && (apiToken != null || (panelUsername != null && panelPassword != null))) {
-                xuiApiClient = new XuiApiClient(panelUrl, panelUsername, panelPassword, apiToken);
+                xuiApiClient = new XuiApiClient(panelUrl, panelUsername, panelPassword, apiToken, subPort, subPath);
                 expiryChecker = new XuiExpiryChecker(this, xuiApiClient, 
                     Integer.parseInt(checkInterval), notifyDays);
                 expiryChecker.start();
@@ -191,12 +198,12 @@ public class TelegramUserBot extends TelegramLongPollingBot {
     }
 
 
-    private void handleSyncCommand(long chatId) {
+    private void handleSyncCommand(long chatId, Integer messageId) {
         if (xuiApiClient == null) {
-            sendMessage("❌ 3x-ui интеграция не настроена", chatId);
+            sendOrEditMessage("❌ 3x-ui интеграция не настроена", chatId, messageId, null);
             return;
         }
-        sendMessage("🔄 Синхронизация с 3x-ui...", chatId);
+        sendOrEditMessage("🔄 Синхронизация с 3x-ui...", chatId, messageId, null);
         new Thread(() -> {
             try {
                 Map<String, Long> panelClients = xuiApiClient.getAllClientsExpiry();
@@ -246,10 +253,17 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                     sb.append("\n\n(Проверьте Email в панели у этих пользователей)");
                 }
                 final String report = sb.toString();
-                scheduler.execute(() -> sendMessage(report, chatId));
+                InlineKeyboardMarkup markup = null;
+                if (messageId != null) {
+                    markup = InlineKeyboardMarkup.builder().keyboard(Collections.singletonList(
+                            Collections.singletonList(InlineKeyboardButton.builder().text("🔙 В меню").callbackData("back_panel").build())
+                    )).build();
+                }
+                final InlineKeyboardMarkup finalMarkup = markup;
+                scheduler.execute(() -> sendOrEditMessage(report, chatId, messageId, finalMarkup));
             } catch (Exception e) {
                 log.error("Sync failed", e);
-                scheduler.execute(() -> sendMessage("❌ Ошибка синхронизации: " + e.getMessage(), chatId));
+                scheduler.execute(() -> sendOrEditMessage("❌ Ошибка синхронизации: " + e.getMessage(), chatId, messageId, null));
             }
         }).start();
     }
@@ -326,12 +340,14 @@ public class TelegramUserBot extends TelegramLongPollingBot {
     }
 
     private boolean isOwnerCommandButton(String text) {
-        return text.equals(BTN_USERS_LIST) || text.equals(BTN_SEND_MSG) || text.equals(BTN_STATISTICS) ||
+        return text.equals(BTN_MENU_USERS) || text.equals(BTN_MENU_BROADCAST) ||
+                text.equals(BTN_MENU_PANEL) || text.equals(BTN_CANCEL) ||
+                // Legacy direct commands still supported via inline callbacks
+                text.equals(BTN_USERS_LIST) || text.equals(BTN_SEND_MSG) || text.equals(BTN_STATISTICS) ||
                 text.equals(BTN_SEND_MEDIA) || text.equals(BTN_REMOVE_USER) ||
                 text.equals(BTN_SEND_ALL) || text.equals(BTN_SEND_MEDIA_ALL) ||
-                text.equals(BTN_CANCEL) || text.equals(BTN_BAN_USER) ||
-                text.equals(BTN_UNBAN_USER) || text.equals(BTN_RENAME_USER) ||
-                text.equals(BTN_USER_INFO) || text.equals(BTN_BACKUP) ||
+                text.equals(BTN_BAN_USER) || text.equals(BTN_UNBAN_USER) ||
+                text.equals(BTN_RENAME_USER) || text.equals(BTN_USER_INFO) || text.equals(BTN_BACKUP) ||
                 text.equals("🔄 Синхронизация 3x-ui");
     }
 
@@ -345,12 +361,19 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         long chatId = message.getChatId();
         UserSession session = sessions.computeIfAbsent(ownerId, k -> new UserSession());
 
-        if (text.equals("🔄 Синхронизация 3x-ui")) {
-            handleSyncCommand(chatId);
-            return;
-        }
-
         switch (text) {
+            case "🔄 Синхронизация 3x-ui":
+                handleSyncCommand(chatId, null);
+                break;
+            case BTN_MENU_USERS:
+                sendMenuUsers(chatId, null);
+                break;
+            case BTN_MENU_BROADCAST:
+                sendMenuBroadcast(chatId, null);
+                break;
+            case BTN_MENU_PANEL:
+                sendMenuPanel(chatId, null);
+                break;
             case BTN_STATISTICS:
                 handleStatisticsCommand(chatId);
                 break;
@@ -362,7 +385,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                 handleListCommand(chatId);
                 break;
             case BTN_SEND_MSG:
-                sendUsersListInline(chatId, null, "send", 0);
+                sendUsersListInline(chatId, null, "send", 0, "back_broadcast");
                 break;
             case BTN_SEND_ALL:
                 session.setState(UserState.WAITING_FOR_MSG_SEND);
@@ -370,32 +393,70 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                 sendMessage("Введите текст для рассылки всем пользователям:", chatId);
                 break;
             case BTN_SEND_MEDIA:
-                sendUsersListInline(chatId, null, "media", 0);
+                sendUsersListInline(chatId, null, "media", 0, "back_broadcast");
                 break;
             case BTN_SEND_MEDIA_ALL:
                 session.setState(UserState.WAITING_FOR_BROADCAST_MEDIA);
                 sendMessage("Пришлите фото или видео с подписью, которое нужно разослать всем:", chatId);
                 break;
             case BTN_REMOVE_USER:
-                sendUsersListInline(chatId, null, "remove", 0);
+                sendUsersListInline(chatId, null, "remove", 0, "back_users");
                 break;
             case BTN_BAN_USER:
-                sendUsersListInline(chatId, null, "ban", 0);
+                sendUsersListInline(chatId, null, "ban", 0, "back_users");
                 break;
             case BTN_UNBAN_USER:
                 sendBannedUsersListInline(chatId, null, 0);
                 break;
             case BTN_USER_INFO:
-                sendUsersListInline(chatId, null, "info", 0);
+                sendUsersListInline(chatId, null, "info", 0, "back_users");
                 break;
             case BTN_RENAME_USER:
-                sendUsersListInline(chatId, null, "rename", 0);
+                sendUsersListInline(chatId, null, "rename", 0, "back_users");
                 break;
             case BTN_CANCEL:
                 session.setState(UserState.START);
                 sendMessage("Действие отменено.", chatId);
                 break;
         }
+    }
+
+    private void sendMenuUsers(long chatId, Integer messageId) {
+        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+        rows.add(Arrays.asList(
+                InlineKeyboardButton.builder().text("📋 Список").callbackData("menu_list").build(),
+                InlineKeyboardButton.builder().text("ℹ️ Информация").callbackData("menu_info").build()));
+        rows.add(Arrays.asList(
+                InlineKeyboardButton.builder().text("✏️ Переименовать").callbackData("menu_rename").build(),
+                InlineKeyboardButton.builder().text("🗑️ Удалить").callbackData("menu_remove").build()));
+        rows.add(Arrays.asList(
+                InlineKeyboardButton.builder().text("🚫 Забанить").callbackData("menu_ban").build(),
+                InlineKeyboardButton.builder().text("✅ Разбанить").callbackData("menu_unban").build()));
+        rows.add(Collections.singletonList(
+                InlineKeyboardButton.builder().text("📊 Статистика").callbackData("menu_stats").build()));
+        sendOrEditMessage("👥 *Пользователи*", chatId, messageId, InlineKeyboardMarkup.builder().keyboard(rows).build());
+    }
+
+    private void sendMenuBroadcast(long chatId, Integer messageId) {
+        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+        rows.add(Collections.singletonList(
+                InlineKeyboardButton.builder().text("✉️ Сообщение юзеру").callbackData("menu_send_msg").build()));
+        rows.add(Collections.singletonList(
+                InlineKeyboardButton.builder().text("📢 Текст всем").callbackData("menu_send_all").build()));
+        rows.add(Collections.singletonList(
+                InlineKeyboardButton.builder().text("📤 Медиа юзеру").callbackData("menu_send_media").build()));
+        rows.add(Collections.singletonList(
+                InlineKeyboardButton.builder().text("🖼️ Медиа всем").callbackData("menu_send_media_all").build()));
+        sendOrEditMessage("📢 *Рассылка*", chatId, messageId, InlineKeyboardMarkup.builder().keyboard(rows).build());
+    }
+
+    private void sendMenuPanel(long chatId, Integer messageId) {
+        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+        rows.add(Collections.singletonList(
+                InlineKeyboardButton.builder().text("🔄 Синхронизация").callbackData("menu_sync").build()));
+        rows.add(Collections.singletonList(
+                InlineKeyboardButton.builder().text("💾 Бэкап").callbackData("menu_backup").build()));
+        sendOrEditMessage("⚙️ *Панель 3x-ui*", chatId, messageId, InlineKeyboardMarkup.builder().keyboard(rows).build());
     }
 
     private void handleUserMessage(Message message, UserSession session) {
@@ -470,10 +531,14 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                     UserRecord u = users.get(fromId);
                     String name = (u != null && !u.name.isEmpty()) ? u.name : "<не указано>";
                     sendMessage("Ваше имя: " + name, chatId);
+                } else if (text.equals(BTN_MY_KEYS)) {
+                    handleMyKeysCommand(fromId, chatId);
                 } else if (text.equals(BTN_HELP) || text.equals("/help")) {
                     sendHelp(chatId, fromId == ownerId);
-                } else if (fromId != ownerId) {
+                } else if (fromId != ownerId && !text.isEmpty() && !text.startsWith("/")) {
                     forwardToOwner(message);
+                } else if (fromId != ownerId) {
+                    sendMessageWithKeyboard("Я вас не понимаю. Пожалуйста, используйте кнопки меню.", chatId, true);
                 } else {
                     UserRecord bestMatch = null;
                     for (UserRecord u : users.values()) {
@@ -602,6 +667,38 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         }
     }
 
+    private void handleMyKeysCommand(long userId, long chatId) {
+        UserRecord u = users.get(userId);
+        if (u == null || u.xuiUsername == null || u.xuiUsername.isEmpty()) {
+            sendMessage("У вас пока нет привязанных ключей подписки.", chatId);
+            return;
+        }
+
+        if (xuiApiClient != null) {
+            sendMessage("⏳ Запрашиваю ваши ключи из панели...", chatId);
+            List<String> links = xuiApiClient.getClientLinks(u.xuiUsername);
+            String subUrl = xuiApiClient.getSubscriptionUrl(u.xuiUsername);
+
+            if ((links != null && !links.isEmpty()) || (subUrl != null && !subUrl.isEmpty())) {
+                StringBuilder sb = new StringBuilder("🔑 <b>Ваши доступы:</b>\n\n");
+                if (subUrl != null && !subUrl.isEmpty()) {
+                    sb.append("🔗 <b>Ссылка на подписку:</b>\n<code>").append(subUrl).append("</code>\n\n");
+                }
+                if (links != null && !links.isEmpty()) {
+                    sb.append("🛡 <b>Прямые ключи:</b>\n");
+                    for (String link : links) {
+                        sb.append("<code>").append(link).append("</code>\n\n");
+                    }
+                }
+                sendMessage(sb.toString().trim(), chatId);
+            } else {
+                sendMessage("❌ Ключи и подписка не найдены или неактивны.", chatId);
+            }
+        } else {
+            sendMessage("❌ Связь с сервером ключей временно недоступна.", chatId);
+        }
+    }
+
     private void handleCallbackQuery(CallbackQuery query) {
         String data = query.getData();
         long chatId = query.getMessage().getChatId();
@@ -609,6 +706,41 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         try {
             execute(org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery.builder()
                     .callbackQueryId(query.getId()).build());
+
+            Integer msgId = query.getMessage().getMessageId();
+
+            // --- Sub-menu callbacks ---
+            switch (data) {
+                case "back_users":     sendMenuUsers(chatId, msgId); return;
+                case "back_broadcast": sendMenuBroadcast(chatId, msgId); return;
+                case "back_panel":     sendMenuPanel(chatId, msgId); return;
+
+                case "menu_list":   handleListCommand(chatId, msgId); return;
+                case "menu_stats":  handleStatisticsCommand(chatId, msgId); return;
+                case "menu_sync":   handleSyncCommand(chatId, msgId); return;
+                case "menu_backup": handleBackupCommand(chatId); return; // backup sends file, can't be edited
+                case "menu_info":   sendUsersListInline(chatId, msgId, "info", 0, "back_users"); return;
+                case "menu_rename": sendUsersListInline(chatId, msgId, "rename", 0, "back_users"); return;
+                case "menu_remove": sendUsersListInline(chatId, msgId, "remove", 0, "back_users"); return;
+                case "menu_ban":    sendUsersListInline(chatId, msgId, "ban", 0, "back_users"); return;
+                case "menu_unban":  sendBannedUsersListInline(chatId, msgId, 0); return;
+                case "menu_send_msg":
+                    sendUsersListInline(chatId, msgId, "send", 0, "back_broadcast"); return;
+                case "menu_send_all":
+                    session.setState(UserState.WAITING_FOR_MSG_SEND);
+                    session.setTargetUserId(-1L);
+                    sendOrEditMessage("Введите текст для рассылки всем пользователям:", chatId, msgId, 
+                        InlineKeyboardMarkup.builder().keyboard(Collections.singletonList(Collections.singletonList(InlineKeyboardButton.builder().text("🔙 Отмена").callbackData("back_broadcast").build()))).build());
+                    return;
+                case "menu_send_media":
+                    sendUsersListInline(chatId, msgId, "media", 0, "back_broadcast"); return;
+                case "menu_send_media_all":
+                    session.setState(UserState.WAITING_FOR_BROADCAST_MEDIA);
+                    sendOrEditMessage("Пришлите фото или видео с подписью, которое нужно разослать всем:", chatId, msgId, 
+                        InlineKeyboardMarkup.builder().keyboard(Collections.singletonList(Collections.singletonList(InlineKeyboardButton.builder().text("🔙 Отмена").callbackData("back_broadcast").build()))).build());
+                    return;
+            }
+
             if (data.startsWith("page_")) {
                 String[] parts = data.split("_");
                 String action = parts[1];
@@ -616,7 +748,8 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                 if (action.equals("unban")) {
                     sendBannedUsersListInline(chatId, query.getMessage().getMessageId(), page);
                 } else {
-                    sendUsersListInline(chatId, query.getMessage().getMessageId(), action, page);
+                    String backData = (action.equals("send") || action.equals("media")) ? "back_broadcast" : "back_users";
+                    sendUsersListInline(chatId, query.getMessage().getMessageId(), action, page, backData);
                 }
             } else {
                 if (!data.equals("ignore")) {
@@ -680,13 +813,14 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                                     "Бан: " + (u.banned ? "Да 🚫" : "Нет ✅") +
                                     clientLink;
                             
-                            InlineKeyboardMarkup markup = InlineKeyboardMarkup.builder().keyboard(Collections.singletonList(
-                                Collections.singletonList(InlineKeyboardButton.builder().text("🔄 Сбросить трафик").callbackData("reset_traffic_" + uid).build())
+                            InlineKeyboardMarkup markup = InlineKeyboardMarkup.builder().keyboard(Arrays.asList(
+                                Collections.singletonList(InlineKeyboardButton.builder().text("🔄 Сбросить трафик").callbackData("reset_traffic_" + uid).build()),
+                                Collections.singletonList(InlineKeyboardButton.builder().text("🔙 В меню").callbackData("menu_info").build())
                             )).build();
                             
-                            execute(SendMessage.builder().chatId(String.valueOf(chatId)).text(uInfo).parseMode("HTML").replyMarkup(markup).build());
+                            sendOrEditMessage(uInfo, chatId, query.getMessage().getMessageId(), markup);
                         } else {
-                            sendMessage("Пользователь не найден.", chatId);
+                            sendOrEditMessage("Пользователь не найден.", chatId, query.getMessage().getMessageId(), null);
                         }
                     } else if (data.startsWith("reset_traffic_")) {
                         long uid = Long.parseLong(data.substring(14));
@@ -713,7 +847,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         }
     }
 
-    private void sendUsersListInline(long chatId, Integer messageId, String action, int page) {
+    private void sendUsersListInline(long chatId, Integer messageId, String action, int page, String backCallback) {
         List<UserRecord> list = new ArrayList<>();
         if ("remove".equals(action)) {
             list.addAll(users.values());
@@ -752,10 +886,15 @@ public class TelegramUserBot extends TelegramLongPollingBot {
             rows.add(navRow);
         }
 
+        if (backCallback != null) {
+            rows.add(Collections.singletonList(InlineKeyboardButton.builder().text("🔙 В меню").callbackData(backCallback).build()));
+        }
+
         InlineKeyboardMarkup markup = InlineKeyboardMarkup.builder().keyboard(rows).build();
         try {
             if (messageId != null) {
-                execute(EditMessageReplyMarkup.builder().chatId(String.valueOf(chatId)).messageId(messageId)
+                execute(org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText.builder()
+                        .chatId(String.valueOf(chatId)).messageId(messageId).text("Выберите пользователя:")
                         .replyMarkup(markup).build());
             } else {
                 execute(SendMessage.builder().chatId(String.valueOf(chatId)).text("Выберите пользователя:")
@@ -801,10 +940,13 @@ public class TelegramUserBot extends TelegramLongPollingBot {
             rows.add(navRow);
         }
 
+        rows.add(Collections.singletonList(InlineKeyboardButton.builder().text("🔙 В меню").callbackData("back_users").build()));
+
         InlineKeyboardMarkup markup = InlineKeyboardMarkup.builder().keyboard(rows).build();
         try {
             if (messageId != null) {
-                execute(EditMessageReplyMarkup.builder().chatId(String.valueOf(chatId)).messageId(messageId)
+                execute(org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText.builder()
+                        .chatId(String.valueOf(chatId)).messageId(messageId).text("Выберите пользователя для разбана:")
                         .replyMarkup(markup).build());
             } else {
                 execute(SendMessage.builder().chatId(String.valueOf(chatId)).text("Выберите пользователя для разбана:")
@@ -815,7 +957,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         }
     }
 
-    private void handleStatisticsCommand(long chatId) {
+    private void handleStatisticsCommand(long chatId, Integer messageId) {
         long total = users.size();
         long banned = users.values().stream().filter(u -> u.banned).count();
         long active = total - banned;
@@ -824,12 +966,22 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                 "Всего пользователей: " + total + "\n" +
                 "Активных: " + active + "\n" +
                 "В бане: " + banned;
-        sendMessage(stats, chatId);
+        InlineKeyboardMarkup markup = null;
+        if (messageId != null) {
+            markup = InlineKeyboardMarkup.builder().keyboard(Collections.singletonList(
+                    Collections.singletonList(InlineKeyboardButton.builder().text("🔙 В меню").callbackData("back_users").build())
+            )).build();
+        }
+        sendOrEditMessage(stats, chatId, messageId, markup);
     }
 
-    private void handleListCommand(long chatId) {
+    private void handleStatisticsCommand(long chatId) {
+        handleStatisticsCommand(chatId, null);
+    }
+
+    private void handleListCommand(long chatId, Integer messageId) {
         if (users.isEmpty()) {
-            sendMessage("Список пользователей пуст.", chatId);
+            sendOrEditMessage("Список пользователей пуст.", chatId, messageId, null);
             return;
         }
         StringBuilder sb = new StringBuilder("📋 Зарегистрированные пользователи:\n\n");
@@ -838,7 +990,17 @@ public class TelegramUserBot extends TelegramLongPollingBot {
             sb.append("👤 ").append(u.name.isEmpty() ? String.valueOf(u.id) : u.name).append(" (").append(u.id)
                     .append(")").append(status).append("\n");
         });
-        sendMessage(sb.toString(), chatId);
+        InlineKeyboardMarkup markup = null;
+        if (messageId != null) {
+            markup = InlineKeyboardMarkup.builder().keyboard(Collections.singletonList(
+                    Collections.singletonList(InlineKeyboardButton.builder().text("🔙 В меню").callbackData("back_users").build())
+            )).build();
+        }
+        sendOrEditMessage(sb.toString(), chatId, messageId, markup);
+    }
+
+    private void handleListCommand(long chatId) {
+        handleListCommand(chatId, null);
     }
 
     public void sendToUser(long userId, String text) {
@@ -860,6 +1022,32 @@ public class TelegramUserBot extends TelegramLongPollingBot {
 
     private void sendMessage(String text, long chatId) {
         sendMessageWithKeyboard(text, chatId, false);
+    }
+
+    private void sendOrEditMessage(String text, long chatId, Integer messageId, InlineKeyboardMarkup markup) {
+        try {
+            if (messageId != null) {
+                org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText edit = 
+                    org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText.builder()
+                        .chatId(String.valueOf(chatId))
+                        .messageId(messageId)
+                        .text(text)
+                        .parseMode("HTML")
+                        .build();
+                if (markup != null) edit.setReplyMarkup(markup);
+                execute(edit);
+            } else {
+                SendMessage send = SendMessage.builder()
+                        .chatId(String.valueOf(chatId))
+                        .text(text)
+                        .parseMode("HTML")
+                        .build();
+                if (markup != null) send.setReplyMarkup(markup);
+                execute(send);
+            }
+        } catch (Exception e) {
+            log.error("Failed to send or edit message", e);
+        }
     }
 
     private void notifyOwner(String text, long chatId) {
@@ -907,7 +1095,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         return ReplyKeyboardMarkup.builder()
                 .keyboard(Arrays.asList(
                         createRow(BTN_HELP, BTN_SET_NAME),
-                        createRow(BTN_MY_NAME)))
+                        createRow(BTN_MY_NAME, BTN_MY_KEYS)))
                 .resizeKeyboard(true)
                 .build();
     }
@@ -915,13 +1103,8 @@ public class TelegramUserBot extends TelegramLongPollingBot {
     private ReplyKeyboardMarkup getOwnerKeyboard() {
         return ReplyKeyboardMarkup.builder()
                 .keyboard(Arrays.asList(
-                        createRow(BTN_USERS_LIST, BTN_STATISTICS),
-                        createRow(BTN_SEND_MSG, BTN_SEND_ALL),
-                        createRow(BTN_SEND_MEDIA, BTN_SEND_MEDIA_ALL),
-                        createRow(BTN_BAN_USER, BTN_UNBAN_USER),
-                        createRow(BTN_REMOVE_USER, BTN_RENAME_USER),
-                        createRow(BTN_USER_INFO, BTN_BACKUP),
-                        createRow("🔄 Синхронизация 3x-ui", BTN_CANCEL)))
+                        createRow(BTN_MENU_USERS, BTN_MENU_BROADCAST),
+                        createRow(BTN_MENU_PANEL, BTN_CANCEL)))
                 .resizeKeyboard(true)
                 .build();
     }

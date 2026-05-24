@@ -9,7 +9,9 @@ import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 public class XuiApiClient {
@@ -18,13 +20,17 @@ public class XuiApiClient {
     private final String username;
     private final String password;
     private final String apiToken;
+    private final int subPort;
+    private final String subPath;
     private String sessionCookie;
     
-    public XuiApiClient(String panelUrl, String username, String password, String apiToken) {
+    public XuiApiClient(String panelUrl, String username, String password, String apiToken, int subPort, String subPath) {
         this.panelUrl = panelUrl.endsWith("/") ? panelUrl.substring(0, panelUrl.length() - 1) : panelUrl;
         this.username = username;
         this.password = password;
         this.apiToken = apiToken;
+        this.subPort = subPort;
+        this.subPath = subPath.startsWith("/") ? subPath : "/" + subPath;
     }
     
     public boolean login() {
@@ -106,19 +112,41 @@ public class XuiApiClient {
     }
 
     public boolean resetClientTraffic(String email) {
-        int inboundId = findInboundIdByEmail(email);
-        if (inboundId == -1) return false;
-        JSONObject res = makeApiRequest("/panel/api/inbounds/" + inboundId + "/resetClientTraffic/" + email, "POST");
-        return res != null && res.optBoolean("success", false);
+        List<Integer> inboundIds = findInboundIdsByEmail(email);
+        if (inboundIds.isEmpty()) return false;
+        boolean anySuccess = false;
+        for (int inboundId : inboundIds) {
+            JSONObject res = makeApiRequest("/panel/api/inbounds/" + inboundId + "/resetClientTraffic/" + email, "POST");
+            if (res != null && res.optBoolean("success", false)) {
+                anySuccess = true;
+            }
+        }
+        return anySuccess;
     }
 
     public String getSubscriptionUrl(String email) {
-        String subId = findSubIdByEmail(email);
-        if (subId == null || subId.isEmpty()) return null;
-        return panelUrl + "/sub/" + subId;
+        // Extract base domain (scheme + host only, no port/path)
+        String baseUrl = panelUrl;
+        if (baseUrl.contains("://")) {
+            int schemeEnd = baseUrl.indexOf("://") + 3;
+            int portColon = baseUrl.indexOf(":", schemeEnd);
+            int firstSlash = baseUrl.indexOf("/", schemeEnd);
+            int end = -1;
+            if (portColon != -1 && (firstSlash == -1 || portColon < firstSlash)) {
+                end = portColon;
+            } else if (firstSlash != -1) {
+                end = firstSlash;
+            }
+            if (end != -1) baseUrl = baseUrl.substring(0, end);
+        }
+        // Ensure path ends with /
+        String path = subPath.endsWith("/") ? subPath : subPath + "/";
+        return baseUrl + ":" + subPort + path + email;
     }
 
-    public String findSubIdByEmail(String email) {
+
+    public List<Integer> findInboundIdsByEmail(String email) {
+        List<Integer> ids = new ArrayList<>();
         try {
             JSONObject res = makeApiRequest("/panel/api/inbounds/list", "GET");
             if (res != null && res.optBoolean("success")) {
@@ -126,16 +154,12 @@ public class XuiApiClient {
                 if (arr != null) {
                     for (int i = 0; i < arr.length(); i++) {
                         JSONObject inbound = arr.getJSONObject(i);
-                        String settingsStr = inbound.optString("settings", "");
-                        if (!settingsStr.isEmpty()) {
-                            JSONObject settings = new JSONObject(settingsStr);
-                            JSONArray clients = settings.optJSONArray("clients");
-                            if (clients != null) {
-                                for (int j = 0; j < clients.length(); j++) {
-                                    JSONObject client = clients.getJSONObject(j);
-                                    if (email.equals(client.optString("email"))) {
-                                        return client.optString("subId", "");
-                                    }
+                        JSONObject settings = new JSONObject(inbound.optString("settings", "{}"));
+                        JSONArray clients = settings.optJSONArray("clients");
+                        if (clients != null) {
+                            for (int j = 0; j < clients.length(); j++) {
+                                if (email.equals(clients.getJSONObject(j).optString("email"))) {
+                                    ids.add(inbound.getInt("id"));
                                 }
                             }
                         }
@@ -143,34 +167,42 @@ public class XuiApiClient {
                 }
             }
         } catch (Exception e) {
-            log.error("Failed to find subId for email: {}", email);
+            log.error("Failed to find inbounds for email: {}", email);
         }
-        return null;
+        return ids;
     }
 
-    public int findInboundIdByEmail(String email) {
+    public List<String> getClientLinks(String email) {
+        List<String> links = new ArrayList<>();
+        String subUrl = getSubscriptionUrl(email);
+        if (subUrl == null || subUrl.isEmpty()) return links;
+
         try {
-            JSONObject res = makeApiRequest("/panel/api/inbounds/list", "GET");
-            if (res != null && res.optBoolean("success")) {
-                JSONArray arr = res.optJSONArray("obj");
-                if (arr != null) {
-                    for (int i = 0; i < arr.length(); i++) {
-                        JSONObject inbound = arr.getJSONObject(i);
-                        JSONArray clientStats = inbound.optJSONArray("clientStats");
-                        if (clientStats != null) {
-                            for (int j = 0; j < clientStats.length(); j++) {
-                                if (email.equals(clientStats.getJSONObject(j).optString("email"))) {
-                                    return inbound.getInt("id");
-                                }
-                            }
+            HttpURLConnection conn = (HttpURLConnection) new URL(subUrl).openConnection();
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("User-Agent", "curl/7.81.0");
+            conn.setRequestProperty("Accept", "*/*");
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(5000);
+
+            if (conn.getResponseCode() == 200) {
+                try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+                    String stringContent = br.lines().collect(java.util.stream.Collectors.joining(""));
+                    try {
+                        String decoded = new String(java.util.Base64.getMimeDecoder().decode(stringContent), StandardCharsets.UTF_8);
+                        for (String line : decoded.split("\n")) {
+                            String link = line.trim();
+                            if (!link.isEmpty()) links.add(link);
                         }
+                    } catch (IllegalArgumentException e) {
+                        log.error("Failed to decode base64 from sub link for {}", email);
                     }
                 }
             }
         } catch (Exception e) {
-            log.error("Failed to find inbound for email: {}", email);
+            log.error("Failed to fetch sub links for {}", email, e);
         }
-        return -1;
+        return links;
     }
 
     public File downloadDb() {
