@@ -39,6 +39,8 @@ public class XuiApiClient {
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("POST");
             conn.setRequestProperty("Content-Type", "application/json");
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(10000);
             conn.setDoOutput(true);
             
             JSONObject json = new JSONObject();
@@ -54,8 +56,10 @@ public class XuiApiClient {
                 sessionCookie = cookie.split(";")[0];
                 log.info("Successfully logged in to 3x-ui panel");
                 return true;
+            } else {
+                log.error("Login response did not contain Set-Cookie header");
+                return false;
             }
-            return false;
         } catch (Exception e) {
             log.error("Login failed: {}", e.getMessage());
             return false;
@@ -188,14 +192,17 @@ public class XuiApiClient {
             if (conn.getResponseCode() == 200) {
                 try (BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
                     String stringContent = br.lines().collect(java.util.stream.Collectors.joining(""));
+                    String decoded;
                     try {
-                        String decoded = new String(java.util.Base64.getMimeDecoder().decode(stringContent), StandardCharsets.UTF_8);
-                        for (String line : decoded.split("\n")) {
-                            String link = line.trim();
-                            if (!link.isEmpty()) links.add(link);
-                        }
+                        decoded = new String(java.util.Base64.getMimeDecoder().decode(stringContent), StandardCharsets.UTF_8);
                     } catch (IllegalArgumentException e) {
-                        log.error("Failed to decode base64 from sub link for {}", email);
+                        log.warn("Subscription content for {} is not Base64 encoded, processing as plain text.", email);
+                        decoded = stringContent;
+                    }
+                    
+                    for (String line : decoded.split("\n")) {
+                        String link = line.trim();
+                        if (!link.isEmpty()) links.add(link);
                     }
                 }
             }
@@ -239,7 +246,7 @@ public class XuiApiClient {
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod(method);
             conn.setConnectTimeout(5000);
-            conn.setReadTimeout(5000);
+            conn.setReadTimeout(10000);
 
             if (authenticateConnection(conn)) {
                 int code = conn.getResponseCode();

@@ -61,8 +61,9 @@ public class XuiExpiryChecker {
                 String xuiUsername = entry.getKey();
                 long expiryTime = entry.getValue();
                 
-                // expiryTime = 0 means no expiry (unlimited)
-                if (expiryTime == 0) {
+                // expiryTime <= 0 means no expiry (unlimited)
+                if (expiryTime <= 0) {
+                    log.debug("User {} has unlimited expiry time, skipping.", xuiUsername);
                     continue;
                 }
                 

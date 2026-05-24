@@ -1134,6 +1134,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
     }
 
     private String formatTraffic(long bytes) {
+        if (bytes <= 0) return "0 B";
         if (bytes < 1024) return bytes + " B";
         int exp = (int) (Math.log(bytes) / Math.log(1024));
         char pre = "KMGTPE".charAt(exp - 1);
