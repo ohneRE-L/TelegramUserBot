@@ -71,7 +71,8 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         public volatile int lastNotifiedDay;
         public volatile String tgUsername;
 
-        public UserRecord(long id, String name, boolean banned, String xuiUsername, long expiryDate, int lastNotifiedDay, String tgUsername) {
+        public UserRecord(long id, String name, boolean banned, String xuiUsername, long expiryDate,
+                int lastNotifiedDay, String tgUsername) {
             this.id = id;
             this.name = name;
             this.banned = banned;
@@ -127,6 +128,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
     @SuppressWarnings("FieldCanBeLocal")
     private XuiExpiryChecker expiryChecker;
     private final Properties configProps = new Properties();
+
     public TelegramUserBot(String token, String botUsername, long ownerId) {
         super(token);
         this.botUsername = botUsername;
@@ -151,7 +153,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                     }
                 }
             }
-            
+
             String panelUrl = configProps.getProperty("xui.panel.url");
             String panelUsername = configProps.getProperty("xui.panel.username");
             String panelPassword = configProps.getProperty("xui.panel.password");
@@ -162,8 +164,8 @@ public class TelegramUserBot extends TelegramLongPollingBot {
             String subPath = configProps.getProperty("xui.sub.path", "/sub/");
             if (panelUrl != null && (apiToken != null || (panelUsername != null && panelPassword != null))) {
                 xuiApiClient = new XuiApiClient(panelUrl, panelUsername, panelPassword, apiToken, subPort, subPath);
-                expiryChecker = new XuiExpiryChecker(this, xuiApiClient, 
-                    Integer.parseInt(checkInterval), notifyDays);
+                expiryChecker = new XuiExpiryChecker(this, xuiApiClient,
+                        Integer.parseInt(checkInterval), notifyDays);
                 expiryChecker.start();
                 log.info("3x-ui integration initialized (discovery mode: all inbounds)");
             } else {
@@ -196,7 +198,6 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         UserRecord user = users.get(tgId);
         return user != null && user.banned;
     }
-
 
     private void handleSyncCommand(long chatId, Integer messageId) {
         if (xuiApiClient == null) {
@@ -240,7 +241,8 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                                 usernamesFetched++;
                             }
                             Thread.sleep(200);
-                        } catch (Exception ignored) {}
+                        } catch (Exception ignored) {
+                        }
                     }
                 }
                 markDirty();
@@ -249,21 +251,24 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                 sb.append("Восстановлено никнеймов: ").append(usernamesFetched);
                 if (!notFound.isEmpty()) {
                     sb.append("\n\n⚠️ Не найдены в панели 3x-ui:");
-                    for (String name : notFound) sb.append("\n- ").append(name);
+                    for (String name : notFound)
+                        sb.append("\n- ").append(name);
                     sb.append("\n\n(Проверьте Email в панели у этих пользователей)");
                 }
                 final String report = sb.toString();
                 InlineKeyboardMarkup markup = null;
                 if (messageId != null) {
                     markup = InlineKeyboardMarkup.builder().keyboard(Collections.singletonList(
-                            Collections.singletonList(InlineKeyboardButton.builder().text("🔙 В меню").callbackData("back_panel").build())
-                    )).build();
+                            Collections.singletonList(InlineKeyboardButton.builder().text("🔙 В меню")
+                                    .callbackData("back_panel").build())))
+                            .build();
                 }
                 final InlineKeyboardMarkup finalMarkup = markup;
                 scheduler.execute(() -> sendOrEditMessage(report, chatId, messageId, finalMarkup));
             } catch (Exception e) {
                 log.error("Sync failed", e);
-                scheduler.execute(() -> sendOrEditMessage("❌ Ошибка синхронизации: " + e.getMessage(), chatId, messageId, null));
+                scheduler.execute(
+                        () -> sendOrEditMessage("❌ Ошибка синхронизации: " + e.getMessage(), chatId, messageId, null));
             }
         }).start();
     }
@@ -434,7 +439,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                 InlineKeyboardButton.builder().text("✅ Разбанить").callbackData("menu_unban").build()));
         rows.add(Collections.singletonList(
                 InlineKeyboardButton.builder().text("📊 Статистика").callbackData("menu_stats").build()));
-        sendOrEditMessage("👥 *Пользователи*", chatId, messageId, InlineKeyboardMarkup.builder().keyboard(rows).build());
+        sendOrEditMessage("👥 Пользователи", chatId, messageId, InlineKeyboardMarkup.builder().keyboard(rows).build());
     }
 
     private void sendMenuBroadcast(long chatId, Integer messageId) {
@@ -447,7 +452,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                 InlineKeyboardButton.builder().text("📤 Медиа юзеру").callbackData("menu_send_media").build()));
         rows.add(Collections.singletonList(
                 InlineKeyboardButton.builder().text("🖼️ Медиа всем").callbackData("menu_send_media_all").build()));
-        sendOrEditMessage("📢 *Рассылка*", chatId, messageId, InlineKeyboardMarkup.builder().keyboard(rows).build());
+        sendOrEditMessage("📢 Рассылка", chatId, messageId, InlineKeyboardMarkup.builder().keyboard(rows).build());
     }
 
     private void sendMenuPanel(long chatId, Integer messageId) {
@@ -456,7 +461,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                 InlineKeyboardButton.builder().text("🔄 Синхронизация").callbackData("menu_sync").build()));
         rows.add(Collections.singletonList(
                 InlineKeyboardButton.builder().text("💾 Бэкап").callbackData("menu_backup").build()));
-        sendOrEditMessage("⚙️ *Панель 3x-ui*", chatId, messageId, InlineKeyboardMarkup.builder().keyboard(rows).build());
+        sendOrEditMessage("⚙️ Панель 3x-ui", chatId, messageId, InlineKeyboardMarkup.builder().keyboard(rows).build());
     }
 
     private void handleUserMessage(Message message, UserSession session) {
@@ -542,7 +547,7 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                 } else {
                     UserRecord bestMatch = null;
                     for (UserRecord u : users.values()) {
-                        if (u.name != null && !u.name.trim().isEmpty() 
+                        if (u.name != null && !u.name.trim().isEmpty()
                                 && text.toLowerCase().startsWith(u.name.toLowerCase() + " ")) {
                             if (bestMatch == null || u.name.length() > bestMatch.name.length()) {
                                 bestMatch = u;
@@ -597,14 +602,16 @@ public class TelegramUserBot extends TelegramLongPollingBot {
     private void handleBroadcastMedia(Message message) {
         String caption = message.getCaption();
         List<UserRecord> targets = users.values().stream().filter(u -> !u.banned).collect(Collectors.toList());
-        
+
         if (message.hasPhoto()) {
             String fileId = message.getPhoto().get(message.getPhoto().size() - 1).getFileId();
             sendMessage("Запускаю рассылку фото " + targets.size() + " пользователям...", ownerId);
             for (UserRecord u : targets) {
                 try {
-                    execute(SendPhoto.builder().chatId(String.valueOf(u.id)).photo(new InputFile(fileId)).caption(caption).build());
-                } catch (Exception ignored) {}
+                    execute(SendPhoto.builder().chatId(String.valueOf(u.id)).photo(new InputFile(fileId))
+                            .caption(caption).build());
+                } catch (Exception ignored) {
+                }
             }
             sendMessage("✅ Рассылка фото завершена!", ownerId);
         } else if (message.hasVideo()) {
@@ -612,8 +619,10 @@ public class TelegramUserBot extends TelegramLongPollingBot {
             sendMessage("Запускаю рассылку видео " + targets.size() + " пользователям...", ownerId);
             for (UserRecord u : targets) {
                 try {
-                    execute(SendVideo.builder().chatId(String.valueOf(u.id)).video(new InputFile(fileId)).caption(caption).build());
-                } catch (Exception ignored) {}
+                    execute(SendVideo.builder().chatId(String.valueOf(u.id)).video(new InputFile(fileId))
+                            .caption(caption).build());
+                } catch (Exception ignored) {
+                }
             }
             sendMessage("✅ Рассылка видео завершена!", ownerId);
         } else {
@@ -711,33 +720,66 @@ public class TelegramUserBot extends TelegramLongPollingBot {
 
             // --- Sub-menu callbacks ---
             switch (data) {
-                case "back_users":     sendMenuUsers(chatId, msgId); return;
-                case "back_broadcast": sendMenuBroadcast(chatId, msgId); return;
-                case "back_panel":     sendMenuPanel(chatId, msgId); return;
+                case "back_users":
+                    sendMenuUsers(chatId, msgId);
+                    return;
+                case "back_broadcast":
+                    sendMenuBroadcast(chatId, msgId);
+                    return;
+                case "back_panel":
+                    sendMenuPanel(chatId, msgId);
+                    return;
 
-                case "menu_list":   handleListCommand(chatId, msgId); return;
-                case "menu_stats":  handleStatisticsCommand(chatId, msgId); return;
-                case "menu_sync":   handleSyncCommand(chatId, msgId); return;
-                case "menu_backup": handleBackupCommand(chatId); return; // backup sends file, can't be edited
-                case "menu_info":   sendUsersListInline(chatId, msgId, "info", 0, "back_users"); return;
-                case "menu_rename": sendUsersListInline(chatId, msgId, "rename", 0, "back_users"); return;
-                case "menu_remove": sendUsersListInline(chatId, msgId, "remove", 0, "back_users"); return;
-                case "menu_ban":    sendUsersListInline(chatId, msgId, "ban", 0, "back_users"); return;
-                case "menu_unban":  sendBannedUsersListInline(chatId, msgId, 0); return;
+                case "menu_list":
+                    handleListCommand(chatId, msgId);
+                    return;
+                case "menu_stats":
+                    handleStatisticsCommand(chatId, msgId);
+                    return;
+                case "menu_sync":
+                    handleSyncCommand(chatId, msgId);
+                    return;
+                case "menu_backup":
+                    handleBackupCommand(chatId);
+                    return; // backup sends file, can't be edited
+                case "menu_info":
+                    sendUsersListInline(chatId, msgId, "info", 0, "back_users");
+                    return;
+                case "menu_rename":
+                    sendUsersListInline(chatId, msgId, "rename", 0, "back_users");
+                    return;
+                case "menu_remove":
+                    sendUsersListInline(chatId, msgId, "remove", 0, "back_users");
+                    return;
+                case "menu_ban":
+                    sendUsersListInline(chatId, msgId, "ban", 0, "back_users");
+                    return;
+                case "menu_unban":
+                    sendBannedUsersListInline(chatId, msgId, 0);
+                    return;
                 case "menu_send_msg":
-                    sendUsersListInline(chatId, msgId, "send", 0, "back_broadcast"); return;
+                    sendUsersListInline(chatId, msgId, "send", 0, "back_broadcast");
+                    return;
                 case "menu_send_all":
                     session.setState(UserState.WAITING_FOR_MSG_SEND);
                     session.setTargetUserId(-1L);
-                    sendOrEditMessage("Введите текст для рассылки всем пользователям:", chatId, msgId, 
-                        InlineKeyboardMarkup.builder().keyboard(Collections.singletonList(Collections.singletonList(InlineKeyboardButton.builder().text("🔙 Отмена").callbackData("back_broadcast").build()))).build());
+                    sendOrEditMessage("Введите текст для рассылки всем пользователям:", chatId, msgId,
+                            InlineKeyboardMarkup.builder()
+                                    .keyboard(Collections.singletonList(Collections.singletonList(InlineKeyboardButton
+                                            .builder().text("🔙 Отмена").callbackData("back_broadcast").build())))
+                                    .build());
                     return;
                 case "menu_send_media":
-                    sendUsersListInline(chatId, msgId, "media", 0, "back_broadcast"); return;
+                    sendUsersListInline(chatId, msgId, "media", 0, "back_broadcast");
+                    return;
                 case "menu_send_media_all":
                     session.setState(UserState.WAITING_FOR_BROADCAST_MEDIA);
-                    sendOrEditMessage("Пришлите фото или видео с подписью, которое нужно разослать всем:", chatId, msgId, 
-                        InlineKeyboardMarkup.builder().keyboard(Collections.singletonList(Collections.singletonList(InlineKeyboardButton.builder().text("🔙 Отмена").callbackData("back_broadcast").build()))).build());
+                    sendOrEditMessage("Пришлите фото или видео с подписью, которое нужно разослать всем:", chatId,
+                            msgId,
+                            InlineKeyboardMarkup.builder()
+                                    .keyboard(Collections.singletonList(Collections.singletonList(InlineKeyboardButton
+                                            .builder().text("🔙 Отмена").callbackData("back_broadcast").build())))
+                                    .build());
                     return;
             }
 
@@ -748,7 +790,8 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                 if (action.equals("unban")) {
                     sendBannedUsersListInline(chatId, query.getMessage().getMessageId(), page);
                 } else {
-                    String backData = (action.equals("send") || action.equals("media")) ? "back_broadcast" : "back_users";
+                    String backData = (action.equals("send") || action.equals("media")) ? "back_broadcast"
+                            : "back_users";
                     sendUsersListInline(chatId, query.getMessage().getMessageId(), action, page, backData);
                 }
             } else {
@@ -800,27 +843,33 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                                     }
                                 }
                                 String subLink = xuiApiClient.getSubscriptionUrl(u.xuiUsername);
-                                if (subLink != null) clientLink = "\n\n🔗 <b>Подписка:</b>\n<code>" + subLink + "</code>";
+                                if (subLink != null)
+                                    clientLink = "\n\n🔗 <b>Подписка:</b>\n<code>" + subLink + "</code>";
                             }
 
                             String uInfo = "ℹ️ Информация о пользователе:\n\n" +
                                     "ID: <code>" + u.id + "</code>\n" +
                                     "Имя: " + (u.name.isEmpty() ? "не указано" : u.name) + "\n" +
                                     "Юзернейм TG: " + (u.tgUsername.isEmpty() ? "нет" : "@" + u.tgUsername) + "\n" +
-                                    "Юзернейм 3x-ui: " + (u.xuiUsername.isEmpty() ? "отсутствует" : u.xuiUsername) + 
+                                    "Юзернейм 3x-ui: " + (u.xuiUsername.isEmpty() ? "отсутствует" : u.xuiUsername) +
                                     trafficInfo + "\n" +
-                                    "Истекает: " + (u.expiryDate > 0 ? new java.util.Date(u.expiryDate).toString() : "неограниченно") + "\n" +
+                                    "Истекает: "
+                                    + (u.expiryDate > 0 ? new java.util.Date(u.expiryDate).toString() : "неограниченно")
+                                    + "\n" +
                                     "Бан: " + (u.banned ? "Да 🚫" : "Нет ✅") +
                                     clientLink;
-                            
+
                             InlineKeyboardMarkup markup = InlineKeyboardMarkup.builder().keyboard(Arrays.asList(
-                                Collections.singletonList(InlineKeyboardButton.builder().text("🔄 Сбросить трафик").callbackData("reset_traffic_" + uid).build()),
-                                Collections.singletonList(InlineKeyboardButton.builder().text("🔙 В меню").callbackData("menu_info").build())
-                            )).build();
-                            
+                                    Collections.singletonList(InlineKeyboardButton.builder().text("🔄 Сбросить трафик")
+                                            .callbackData("reset_traffic_" + uid).build()),
+                                    Collections.singletonList(InlineKeyboardButton.builder().text("🔙 В меню")
+                                            .callbackData("menu_info").build())))
+                                    .build();
+
                             sendOrEditMessage(uInfo, chatId, query.getMessage().getMessageId(), markup);
                         } else {
-                            sendOrEditMessage("Пользователь не найден.", chatId, query.getMessage().getMessageId(), null);
+                            sendOrEditMessage("Пользователь не найден.", chatId, query.getMessage().getMessageId(),
+                                    null);
                         }
                     } else if (data.startsWith("reset_traffic_")) {
                         long uid = Long.parseLong(data.substring(14));
@@ -887,7 +936,8 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         }
 
         if (backCallback != null) {
-            rows.add(Collections.singletonList(InlineKeyboardButton.builder().text("🔙 В меню").callbackData(backCallback).build()));
+            rows.add(Collections.singletonList(
+                    InlineKeyboardButton.builder().text("🔙 В меню").callbackData(backCallback).build()));
         }
 
         InlineKeyboardMarkup markup = InlineKeyboardMarkup.builder().keyboard(rows).build();
@@ -940,7 +990,8 @@ public class TelegramUserBot extends TelegramLongPollingBot {
             rows.add(navRow);
         }
 
-        rows.add(Collections.singletonList(InlineKeyboardButton.builder().text("🔙 В меню").callbackData("back_users").build()));
+        rows.add(Collections
+                .singletonList(InlineKeyboardButton.builder().text("🔙 В меню").callbackData("back_users").build()));
 
         InlineKeyboardMarkup markup = InlineKeyboardMarkup.builder().keyboard(rows).build();
         try {
@@ -969,8 +1020,9 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         InlineKeyboardMarkup markup = null;
         if (messageId != null) {
             markup = InlineKeyboardMarkup.builder().keyboard(Collections.singletonList(
-                    Collections.singletonList(InlineKeyboardButton.builder().text("🔙 В меню").callbackData("back_users").build())
-            )).build();
+                    Collections.singletonList(
+                            InlineKeyboardButton.builder().text("🔙 В меню").callbackData("back_users").build())))
+                    .build();
         }
         sendOrEditMessage(stats, chatId, messageId, markup);
     }
@@ -993,8 +1045,9 @@ public class TelegramUserBot extends TelegramLongPollingBot {
         InlineKeyboardMarkup markup = null;
         if (messageId != null) {
             markup = InlineKeyboardMarkup.builder().keyboard(Collections.singletonList(
-                    Collections.singletonList(InlineKeyboardButton.builder().text("🔙 В меню").callbackData("back_users").build())
-            )).build();
+                    Collections.singletonList(
+                            InlineKeyboardButton.builder().text("🔙 В меню").callbackData("back_users").build())))
+                    .build();
         }
         sendOrEditMessage(sb.toString(), chatId, messageId, markup);
     }
@@ -1027,14 +1080,15 @@ public class TelegramUserBot extends TelegramLongPollingBot {
     private void sendOrEditMessage(String text, long chatId, Integer messageId, InlineKeyboardMarkup markup) {
         try {
             if (messageId != null) {
-                org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText edit = 
-                    org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText.builder()
+                org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText edit = org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText
+                        .builder()
                         .chatId(String.valueOf(chatId))
                         .messageId(messageId)
                         .text(text)
                         .parseMode("HTML")
                         .build();
-                if (markup != null) edit.setReplyMarkup(markup);
+                if (markup != null)
+                    edit.setReplyMarkup(markup);
                 execute(edit);
             } else {
                 SendMessage send = SendMessage.builder()
@@ -1042,7 +1096,8 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                         .text(text)
                         .parseMode("HTML")
                         .build();
-                if (markup != null) send.setReplyMarkup(markup);
+                if (markup != null)
+                    send.setReplyMarkup(markup);
                 execute(send);
             }
         } catch (Exception e) {
@@ -1134,8 +1189,10 @@ public class TelegramUserBot extends TelegramLongPollingBot {
     }
 
     private String formatTraffic(long bytes) {
-        if (bytes <= 0) return "0 B";
-        if (bytes < 1024) return bytes + " B";
+        if (bytes <= 0)
+            return "0 B";
+        if (bytes < 1024)
+            return bytes + " B";
         int exp = (int) (Math.log(bytes) / Math.log(1024));
         char pre = "KMGTPE".charAt(exp - 1);
         return String.format("%.2f %cB", bytes / Math.pow(1024, exp), pre);
