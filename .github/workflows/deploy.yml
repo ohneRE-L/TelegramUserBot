@@ -29,6 +29,7 @@ jobs:
           host: ${{ secrets.SERVER_IP }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 9049
           source: "target/*-jar-with-dependencies.jar"
           target: "/bots/sendBot/target/"
           strip_components: 1
@@ -39,5 +40,6 @@ jobs:
           host: ${{ secrets.SERVER_IP }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 9049
           script: |
             sudo systemctl restart sendBot
