@@ -818,7 +818,6 @@ public class TelegramUserBot extends TelegramLongPollingBot {
                             users.get(uid).banned = true;
                         markDirty();
                         sendMessage("Пользователь " + uid + " добавлен в бан-лист.", chatId);
-                        sendToUser(uid, "Ты забанен.");
                     } else if (data.startsWith("unban_")) {
                         long uid = Long.parseLong(data.substring(6));
                         if (users.containsKey(uid))
