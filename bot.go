@@ -13,6 +13,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	qrcode "github.com/skip2/go-qrcode"
 )
 
 type UserState int
@@ -24,29 +25,32 @@ const (
 	StateWaitingForMedia
 	StateWaitingForBroadcastMedia
 	StateWaitingForRename
+	StateWaitingForSearch
 )
 
 const (
-	BtnUsersList     = "📋 Список пользователей"
-	BtnSendMsg       = "✉️ Отправить сообщение"
-	BtnSendAll       = "📢 Отправить всем"
-	BtnSendMedia     = "📤 Отправить медиа"
-	BtnSendMediaAll  = "🖼️ Рассылка медиа всем"
-	BtnRemoveUser    = "🗑️ Удалить пользователя"
-	BtnBanUser       = "🚫 Забанить"
-	BtnUnbanUser     = "✅ Разбанить"
-	BtnRenameUser    = "✏️ Переименовать"
-	BtnCancel        = "❌ Отмена"
-	BtnStatistics    = "📊 Статистика"
-	BtnUserInfo      = "ℹ️ Информация о пользователе"
-	BtnBackup        = "💾 Бэкап панели 3x-ui"
-	BtnMenuUsers     = "👥 Пользователи"
-	BtnMenuBroadcast = "📢 Рассылка"
-	BtnMenuPanel     = "⚙️ Панель 3x-ui"
-	BtnHelp          = "Помощь"
-	BtnSetName       = "Указать имя"
-	BtnMyName        = "Моё имя"
-	BtnMyKeys        = "🔑 Мои ключи"
+	BtnUsersList       = "📋 Список пользователей"
+	BtnSendMsg         = "✉️ Отправить сообщение"
+	BtnSendAll         = "📢 Отправить всем"
+	BtnSendMedia       = "📤 Отправить медиа"
+	BtnSendMediaAll    = "🖼️ Рассылка медиа всем"
+	BtnRemoveUser      = "🗑️ Удалить пользователя"
+	BtnBanUser         = "🚫 Забанить"
+	BtnUnbanUser       = "✅ Разбанить"
+	BtnRenameUser      = "✏️ Переименовать"
+	BtnCancel          = "❌ Отмена"
+	BtnStatistics      = "📊 Статистика"
+	BtnUserInfo        = "ℹ️ Информация о пользователе"
+	BtnBackup          = "💾 Бэкап панели 3x-ui"
+	BtnMenuUsers       = "👥 Пользователи"
+	BtnMenuBroadcast   = "📢 Рассылка"
+	BtnMenuPanel       = "⚙️ Панель 3x-ui"
+	BtnHelp            = "Помощь"
+	BtnSetName         = "Указать имя"
+	BtnMyName          = "Моё имя"
+	BtnMyKeys          = "🔑 Мои ключи"
+	BtnMySubscription  = "📊 Моя подписка"
+	BtnSetupGuide      = "📖 Как настроить"
 )
 
 type UserSession struct {
@@ -62,6 +66,8 @@ type Bot struct {
 	checker  *ExpiryChecker
 	sessions map[int64]*UserSession
 	sessMu   sync.Mutex
+	replyMap map[int]int64
+	replyMu  sync.RWMutex
 }
 
 func NewBot(api *tgbotapi.BotAPI, cfg *Config, storage *Storage, xui *XuiClient) *Bot {
@@ -71,6 +77,7 @@ func NewBot(api *tgbotapi.BotAPI, cfg *Config, storage *Storage, xui *XuiClient)
 		storage:  storage,
 		xui:      xui,
 		sessions: make(map[int64]*UserSession),
+		replyMap: make(map[int]int64),
 	}
 	if xui != nil {
 		b.checker = NewExpiryChecker(storage, xui, b, cfg.XuiCheckIntervalHr, cfg.XuiNotifyDays)
@@ -195,6 +202,24 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 
 	session := b.getSession(fromID)
 
+	// Support native Telegram Reply from owner
+	if fromID == b.config.OwnerID && msg.ReplyToMessage != nil {
+		b.replyMu.RLock()
+		targetID, ok := b.replyMap[msg.ReplyToMessage.MessageID]
+		b.replyMu.RUnlock()
+
+		if ok {
+			if msg.Text != "" {
+				b.sendToUser(targetID, msg.Text)
+				b.sendMessage(msg.Chat.ID, fmt.Sprintf("✅ Ответ отправлен пользователю: %s", msg.Text))
+				return
+			} else if len(msg.Photo) > 0 || msg.Document != nil {
+				b.handleSendMedia(msg, targetID)
+				return
+			}
+		}
+	}
+
 	if fromID == b.config.OwnerID && msg.Text != "" && (strings.HasPrefix(msg.Text, "/") || b.isOwnerCommandButton(msg.Text)) {
 		b.handleOwnerCommand(msg)
 		return
@@ -220,6 +245,11 @@ func (b *Bot) handleOwnerCommand(msg *tgbotapi.Message) {
 	text := msg.Text
 	chatID := msg.Chat.ID
 	session := b.getSession(b.config.OwnerID)
+
+	if strings.HasPrefix(text, "/find") {
+		b.handleFindCommand(chatID, strings.TrimPrefix(text, "/find"))
+		return
+	}
 
 	switch text {
 	case "/start", "/menu":
@@ -320,10 +350,15 @@ func (b *Bot) handleUserMessage(msg *tgbotapi.Message, session *UserSession) {
 			b.sendMessage(chatID, fmt.Sprintf("Пользователь %d переименован в: %s", targetID, text))
 			session.State = StateStart
 		}
+	case StateWaitingForSearch:
+		if fromID == b.config.OwnerID && text != "" {
+			b.handleFindCommand(chatID, text)
+			session.State = StateStart
+		}
 	case StateStart:
 		fallthrough
 	default:
-		if text == "/start" {
+		if text == "/start" || text == "/menu" {
 			b.sendWelcomeMessage(chatID)
 		} else if text == BtnSetName || strings.HasPrefix(text, "/name") {
 			name := ""
@@ -348,6 +383,10 @@ func (b *Bot) handleUserMessage(msg *tgbotapi.Message, session *UserSession) {
 			b.sendMessage(chatID, "Ваше имя: "+name)
 		} else if text == BtnMyKeys {
 			b.handleMyKeysCommand(fromID, chatID)
+		} else if text == BtnMySubscription {
+			b.handleMySubscriptionCommand(fromID, chatID)
+		} else if text == BtnSetupGuide {
+			b.handleSetupGuideCommand(chatID)
 		} else if text == BtnHelp || text == "/help" {
 			b.sendHelp(chatID, fromID == b.config.OwnerID)
 		} else if fromID != b.config.OwnerID && text != "" && !strings.HasPrefix(text, "/") {
@@ -387,14 +426,23 @@ func (b *Bot) forwardToOwner(msg *tgbotapi.Message) {
 	if u, ok := b.storage.Get(fromID); ok && u.Name != "" {
 		senderName = u.Name
 	}
-	prefix := fmt.Sprintf("📩 [От %s (%d)]: ", senderName, fromID)
+	prefix := fmt.Sprintf("📩 [От %s (%d)]:\n", senderName, fromID)
 
+	var sentMsg tgbotapi.Message
+	var err error
 	if msg.Text != "" {
-		b.notifyOwner(prefix + msg.Text)
+		m := tgbotapi.NewMessage(b.config.OwnerID, prefix+msg.Text)
+		sentMsg, err = b.api.Send(m)
 	} else {
 		fwd := tgbotapi.NewForward(b.config.OwnerID, msg.Chat.ID, msg.MessageID)
-		_, _ = b.api.Send(fwd)
-		b.notifyOwner(prefix + "отправил(а) медиа.")
+		sentMsg, err = b.api.Send(fwd)
+		b.notifyOwner(prefix + "отправил(а) медиа (ответьте свайпом/Reply для связи).")
+	}
+
+	if err == nil && sentMsg.MessageID > 0 {
+		b.replyMu.Lock()
+		b.replyMap[sentMsg.MessageID] = fromID
+		b.replyMu.Unlock()
 	}
 }
 
@@ -506,21 +554,102 @@ func (b *Bot) handleMyKeysCommand(userID, chatID int64) {
 	subURL := b.xui.GetSubscriptionURL(u.XuiUsername)
 
 	if len(links) > 0 || subURL != "" {
-		var sb strings.Builder
-		sb.WriteString("🔑 <b>Ваши доступы:</b>\n\n")
 		if subURL != "" {
-			sb.WriteString(fmt.Sprintf("🔗 <b>Ссылка на подписку:</b>\n<code>%s</code>\n\n", subURL))
+			qrBytes, err := qrcode.Encode(subURL, qrcode.Medium, 300)
+			if err == nil {
+				caption := fmt.Sprintf("📱 <b>QR-код вашей подписки</b>\n\nОтсканируйте в приложении или скопируйте ссылку:\n<code>%s</code>", subURL)
+				photo := tgbotapi.NewPhoto(chatID, tgbotapi.FileBytes{
+					Name:  "subscription.png",
+					Bytes: qrBytes,
+				})
+				photo.Caption = caption
+				photo.ParseMode = "HTML"
+				_, _ = b.api.Send(photo)
+			} else {
+				b.sendMessage(chatID, fmt.Sprintf("🔗 <b>Ссылка на подписку:</b>\n<code>%s</code>", subURL))
+			}
 		}
+
 		if len(links) > 0 {
-			sb.WriteString("🛡 <b>Прямые ключи:</b>\n")
+			var sb strings.Builder
+			sb.WriteString("🛡 <b>Прямые ключи:</b>\n\n")
 			for _, l := range links {
 				sb.WriteString(fmt.Sprintf("<code>%s</code>\n\n", l))
 			}
+			b.sendMessage(chatID, strings.TrimSpace(sb.String()))
 		}
-		b.sendMessage(chatID, strings.TrimSpace(sb.String()))
 	} else {
 		b.sendMessage(chatID, "❌ Ключи и подписка не найдены или неактивны.")
 	}
+}
+
+func (b *Bot) handleMySubscriptionCommand(userID, chatID int64) {
+	u, exists := b.storage.Get(userID)
+	if !exists || u.XuiUsername == "" {
+		b.sendMessage(chatID, "У вас пока нет привязанной подписки. Свяжитесь с администратором для получения доступа.")
+		return
+	}
+
+	if b.xui == nil {
+		b.sendMessage(chatID, "❌ Связь с сервером ключей временно недоступна.")
+		return
+	}
+
+	up, down, err := b.xui.GetClientTraffic(u.XuiUsername)
+	trafficStr := ""
+	if err == nil {
+		total := up + down
+		trafficStr = fmt.Sprintf("\n📊 <b>Использовано трафика:</b>\n   ↑ Загрузка: %s\n   ↓ Скачивание: %s\n   Σ Всего: %s\n",
+			formatTraffic(up), formatTraffic(down), formatTraffic(total))
+	}
+
+	statusStr := "🟢 Активна"
+	expiryStr := "♾️ Неограниченно"
+	if u.ExpiryDate > 0 {
+		now := time.Now().UnixMilli()
+		diff := u.ExpiryDate - now
+		expTime := time.UnixMilli(u.ExpiryDate).Format("02.01.2006 15:04")
+		if diff <= 0 {
+			statusStr = "🔴 Истекла"
+			expiryStr = fmt.Sprintf("Истекла (%s)", expTime)
+		} else {
+			days := diff / (24 * 60 * 60 * 1000)
+			hours := (diff % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000)
+			if days > 0 {
+				expiryStr = fmt.Sprintf("до %s (осталось: %d дн. %d ч.)", expTime, days, hours)
+			} else {
+				expiryStr = fmt.Sprintf("до %s (осталось: %d ч.)", expTime, hours)
+			}
+		}
+	}
+
+	res := fmt.Sprintf("📊 <b>Ваша подписка:</b>\n\n"+
+		"🔑 <b>Логин:</b> <code>%s</code>\n"+
+		"📅 <b>Срок действия:</b> %s\n"+
+		"Статус: %s\n%s",
+		u.XuiUsername, expiryStr, statusStr, trafficStr)
+
+	b.sendMessage(chatID, res)
+}
+
+func (b *Bot) handleSetupGuideCommand(chatID int64) {
+	guide := "📖 <b>Как настроить подключение к VPN:</b>\n\n" +
+		"1️⃣ Нажмите <b>«🔑 Мои ключи»</b> выше, чтобы получить QR-код или ссылку на подписку.\n\n" +
+		"2️⃣ <b>Установите приложение для вашего устройства:</b>\n\n" +
+		"📱 <b>Android:</b>\n" +
+		"• Приложения: <b>v2rayNG</b> или <b>Happ</b> (Google Play)\n" +
+		"• Нажмите <b>+</b> ➔ <i>«Импорт из буфера»</i> или <i>«Сканировать QR-код»</i>.\n\n" +
+		"🍏 <b>iOS (iPhone / iPad):</b>\n" +
+		"• Приложения: <b>Streisand</b>, <b>Happ</b> или <b>Shadowrocket</b> (App Store)\n" +
+		"• Нажмите <b>+</b> ➔ отсканируйте QR-код или вставьте ссылку подписки.\n\n" +
+		"💻 <b>Windows:</b>\n" +
+		"• Приложения: <b>v2rayN</b> или <b>Hiddify</b>\n" +
+		"• Скопируйте ссылку подписки ➔ <i>Подписка</i> ➔ <i>Добавить</i> ➔ <i>Обновить</i>.\n\n" +
+		"🍏 <b>macOS:</b>\n" +
+		"• <b>Streisand</b> (App Store) или <b>V2RayXS</b>\n\n" +
+		"3️⃣ Выберите сервер и нажмите <b>Подключиться (Connect)</b>! 🚀"
+
+	b.sendMessage(chatID, guide)
 }
 
 func (b *Bot) handleSyncCommand(chatID int64, messageID int) {
@@ -705,6 +834,21 @@ func (b *Bot) handleCallback(query *tgbotapi.CallbackQuery) {
 		)
 		b.sendOrEditMessage(chatID, msgID, "Пришлите фото или видео с подписью, которое нужно разослать всем:", &cancelMarkup)
 		return
+	case "menu_server_status":
+		b.handleServerStatusCommand(chatID, msgID)
+		return
+	case "menu_expiring":
+		b.handleExpiringUsersCommand(chatID, msgID)
+		return
+	case "menu_search":
+		session.State = StateWaitingForSearch
+		cancelMarkup := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("🔙 Отмена", "back_users"),
+			),
+		)
+		b.sendOrEditMessage(chatID, msgID, "🔍 Введите имя, @юзернейм или ID пользователя для поиска:", &cancelMarkup)
+		return
 	}
 
 	if strings.HasPrefix(data, "page_") {
@@ -761,62 +905,7 @@ func (b *Bot) handleCallback(query *tgbotapi.CallbackQuery) {
 		}
 	} else if strings.HasPrefix(data, "info_") {
 		uid, _ := strconv.ParseInt(data[5:], 10, 64)
-		u, ok := b.storage.Get(uid)
-		if !ok {
-			b.sendOrEditMessage(chatID, msgID, "Пользователь не найден.", nil)
-			return
-		}
-
-		trafficInfo := ""
-		clientLink := ""
-		if b.xui != nil && u.XuiUsername != "" {
-			up, down, err := b.xui.GetClientTraffic(u.XuiUsername)
-			if err == nil {
-				trafficInfo = fmt.Sprintf("\nТрафик: ↑%s ↓%s", formatTraffic(up), formatTraffic(down))
-			}
-			if subLink := b.xui.GetSubscriptionURL(u.XuiUsername); subLink != "" {
-				clientLink = fmt.Sprintf("\n\n🔗 <b>Подписка:</b>\n<code>%s</code>", subLink)
-			}
-		}
-
-		name := u.Name
-		if name == "" {
-			name = "не указано"
-		}
-		tgUser := "нет"
-		if u.TgUsername != "" {
-			tgUser = "@" + u.TgUsername
-		}
-		xuiUser := "отсутствует"
-		if u.XuiUsername != "" {
-			xuiUser = u.XuiUsername
-		}
-		expiry := "неограниченно"
-		if u.ExpiryDate > 0 {
-			expiry = time.UnixMilli(u.ExpiryDate).Format("02.01.2006 15:04:05")
-		}
-		banStatus := "Нет ✅"
-		if u.Banned {
-			banStatus = "Да 🚫"
-		}
-
-		uInfo := fmt.Sprintf("ℹ️ Информация о пользователе:\n\n"+
-			"ID: <code>%d</code>\n"+
-			"Имя: %s\n"+
-			"Юзернейм TG: %s\n"+
-			"Юзернейм 3x-ui: %s%s\n"+
-			"Истекает: %s\n"+
-			"Бан: %s%s", u.ID, name, tgUser, xuiUser, trafficInfo, expiry, banStatus, clientLink)
-
-		markup := tgbotapi.NewInlineKeyboardMarkup(
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("🔄 Сбросить трафик", fmt.Sprintf("reset_traffic_%d", uid)),
-			),
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("🔙 В меню", "menu_info"),
-			),
-		)
-		b.sendOrEditMessage(chatID, msgID, uInfo, &markup)
+		b.showUserInfo(chatID, msgID, uid)
 	} else if strings.HasPrefix(data, "reset_traffic_") {
 		uid, _ := strconv.ParseInt(data[14:], 10, 64)
 		if u, ok := b.storage.Get(uid); ok && b.xui != nil && u.XuiUsername != "" {
@@ -836,6 +925,223 @@ func (b *Bot) handleCallback(query *tgbotapi.CallbackQuery) {
 		}
 		b.sendMessage(chatID, fmt.Sprintf("Введите новое имя для пользователя %d (текущее: %s):", uid, current))
 	}
+}
+
+func (b *Bot) showUserInfo(chatID int64, messageID int, uid int64) {
+	u, ok := b.storage.Get(uid)
+	if !ok {
+		b.sendOrEditMessage(chatID, messageID, "Пользователь не найден.", nil)
+		return
+	}
+
+	trafficInfo := ""
+	clientLink := ""
+	if b.xui != nil && u.XuiUsername != "" {
+		up, down, err := b.xui.GetClientTraffic(u.XuiUsername)
+		if err == nil {
+			trafficInfo = fmt.Sprintf("\nТрафик: ↑%s ↓%s (Σ %s)", formatTraffic(up), formatTraffic(down), formatTraffic(up+down))
+		}
+		if subLink := b.xui.GetSubscriptionURL(u.XuiUsername); subLink != "" {
+			clientLink = fmt.Sprintf("\n\n🔗 <b>Подписка:</b>\n<code>%s</code>", subLink)
+		}
+	}
+
+	name := u.Name
+	if name == "" {
+		name = "не указано"
+	}
+	tgUser := "нет"
+	if u.TgUsername != "" {
+		tgUser = "@" + u.TgUsername
+	}
+	xuiUser := "отсутствует"
+	if u.XuiUsername != "" {
+		xuiUser = u.XuiUsername
+	}
+	expiry := "неограниченно"
+	if u.ExpiryDate > 0 {
+		now := time.Now().UnixMilli()
+		diff := u.ExpiryDate - now
+		dateStr := time.UnixMilli(u.ExpiryDate).Format("02.01.2006 15:04")
+		if diff <= 0 {
+			expiry = fmt.Sprintf("🔴 Истёк (%s)", dateStr)
+		} else {
+			days := diff / (24 * 60 * 60 * 1000)
+			expiry = fmt.Sprintf("%s (осталось: %d дн.)", dateStr, days)
+		}
+	}
+	banStatus := "Нет ✅"
+	if u.Banned {
+		banStatus = "Да 🚫"
+	}
+
+	uInfo := fmt.Sprintf("ℹ️ Информация о пользователе:\n\n"+
+		"ID: <code>%d</code>\n"+
+		"Имя: %s\n"+
+		"Юзернейм TG: %s\n"+
+		"Юзернейм 3x-ui: %s%s\n"+
+		"Истекает: %s\n"+
+		"Бан: %s%s", u.ID, name, tgUser, xuiUser, trafficInfo, expiry, banStatus, clientLink)
+
+	markup := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🔄 Сбросить трафик", fmt.Sprintf("reset_traffic_%d", uid)),
+			tgbotapi.NewInlineKeyboardButtonData("✉️ Написать", fmt.Sprintf("send_%d", uid)),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🔙 В меню", "menu_info"),
+		),
+	)
+	b.sendOrEditMessage(chatID, messageID, uInfo, &markup)
+}
+
+func (b *Bot) handleFindCommand(chatID int64, query string) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		b.sendMessage(chatID, "Использование: <code>/find <имя, юзернейм или ID></code>")
+		return
+	}
+
+	matches := b.storage.Search(query)
+	if len(matches) == 0 {
+		b.sendMessage(chatID, fmt.Sprintf("❌ Пользователь по запросу «%s» не найден.", query))
+		return
+	}
+
+	if len(matches) == 1 {
+		b.showUserInfo(chatID, 0, matches[0].ID)
+		return
+	}
+
+	var rows [][]tgbotapi.InlineKeyboardButton
+	for _, u := range matches {
+		name := u.Name
+		if name == "" {
+			name = strconv.FormatInt(u.ID, 10)
+		}
+		btn := tgbotapi.NewInlineKeyboardButtonData(
+			fmt.Sprintf("%s [%d]", name, u.ID),
+			fmt.Sprintf("info_%d", u.ID),
+		)
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(btn))
+	}
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("🔙 В меню", "back_users"),
+	))
+	markup := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	b.sendOrEditMessage(chatID, 0, fmt.Sprintf("🔍 Найдено пользователей: %d", len(matches)), &markup)
+}
+
+func (b *Bot) handleServerStatusCommand(chatID int64, messageID int) {
+	if b.xui == nil {
+		b.sendOrEditMessage(chatID, messageID, "❌ 3x-ui интеграция не настроена.", nil)
+		return
+	}
+
+	status, err := b.xui.GetServerStatus()
+	if err != nil {
+		b.sendOrEditMessage(chatID, messageID, "❌ Ошибка получения статуса сервера: "+err.Error(), nil)
+		return
+	}
+
+	uptimeStr := ""
+	if status.Uptime > 0 {
+		days := status.Uptime / 86400
+		hours := (status.Uptime % 86400) / 3600
+		mins := (status.Uptime % 3600) / 60
+		uptimeStr = fmt.Sprintf("%d дн. %d ч. %d мин.", days, hours, mins)
+	} else {
+		uptimeStr = "н/д"
+	}
+
+	memPct := 0.0
+	if status.MemTotal > 0 {
+		memPct = float64(status.MemCurrent) / float64(status.MemTotal) * 100
+	}
+
+	diskPct := 0.0
+	if status.DiskTotal > 0 {
+		diskPct = float64(status.DiskCurrent) / float64(status.DiskTotal) * 100
+	}
+
+	xrayVer := status.XrayVersion
+	if xrayVer == "" {
+		xrayVer = "v1.8+"
+	}
+
+	text := fmt.Sprintf("🩺 <b>Статус сервера 3x-ui:</b>\n\n"+
+		"⚡ <b>CPU:</b> %.1f%%\n"+
+		"🧠 <b>RAM:</b> %s / %s (%.1f%%)\n"+
+		"💾 <b>Диск:</b> %s / %s (%.1f%%)\n"+
+		"🛡 <b>Xray:</b> %s (%s)\n"+
+		"⏱ <b>Аптайм:</b> %s",
+		status.CPU,
+		formatTraffic(status.MemCurrent), formatTraffic(status.MemTotal), memPct,
+		formatTraffic(status.DiskCurrent), formatTraffic(status.DiskTotal), diskPct,
+		status.XrayState, xrayVer,
+		uptimeStr,
+	)
+
+	markup := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🔄 Обновить", "menu_server_status"),
+			tgbotapi.NewInlineKeyboardButtonData("🔙 В меню", "back_panel"),
+		),
+	)
+	b.sendOrEditMessage(chatID, messageID, text, &markup)
+}
+
+func (b *Bot) handleExpiringUsersCommand(chatID int64, messageID int) {
+	expiring := b.storage.GetExpiring(7)
+	if len(expiring) == 0 {
+		markup := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("🔙 В меню", "back_users"),
+			),
+		)
+		b.sendOrEditMessage(chatID, messageID, "✅ В ближайшие 7 дней истекающих подписок нет.", &markup)
+		return
+	}
+
+	now := time.Now().UnixMilli()
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("⚠️ <b>Истекающие подписки (следующие 7 дней, всего %d):</b>\n\n", len(expiring)))
+
+	for _, u := range expiring {
+		diff := u.ExpiryDate - now
+		days := diff / (24 * 60 * 60 * 1000)
+		hours := (diff % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000)
+
+		name := u.Name
+		if name == "" {
+			name = strconv.FormatInt(u.ID, 10)
+		}
+		xuiUser := u.XuiUsername
+		if xuiUser != "" {
+			xuiUser = " (" + xuiUser + ")"
+		}
+
+		timeStr := ""
+		if diff <= 0 {
+			timeStr = "<b>СЕГОДНЯ / ИСТЁК</b>"
+		} else if days == 0 {
+			timeStr = fmt.Sprintf("<b>сегодня (~%d ч.)</b>", hours)
+		} else if days == 1 {
+			timeStr = fmt.Sprintf("<b>завтра (~%d ч.)</b>", hours)
+		} else {
+			timeStr = fmt.Sprintf("через <b>%d дн.</b>", days)
+		}
+
+		dateStr := time.UnixMilli(u.ExpiryDate).Format("02.01.2006")
+		sb.WriteString(fmt.Sprintf("👤 %s%s ➔ %s (%s)\n", name, xuiUser, timeStr, dateStr))
+	}
+
+	markup := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🔙 В меню", "back_users"),
+		),
+	)
+	b.sendOrEditMessage(chatID, messageID, sb.String(), &markup)
 }
 
 func (b *Bot) sendUsersListInline(chatID int64, messageID int, action string, page int, backCallback string) {
@@ -1034,7 +1340,12 @@ func (b *Bot) sendMenuUsers(chatID int64, messageID int) {
 	markup := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("📋 Список", "menu_list"),
-			tgbotapi.NewInlineKeyboardButtonData("ℹ️ Информация", "menu_info"),
+			tgbotapi.NewInlineKeyboardButtonData("🔍 Поиск", "menu_search"),
+			tgbotapi.NewInlineKeyboardButtonData("ℹ️ Инфо", "menu_info"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("⚠️ Истекающие (7 дн.)", "menu_expiring"),
+			tgbotapi.NewInlineKeyboardButtonData("📊 Статистика", "menu_stats"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("✏️ Переименовать", "menu_rename"),
@@ -1043,9 +1354,6 @@ func (b *Bot) sendMenuUsers(chatID int64, messageID int) {
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("🚫 Забанить", "menu_ban"),
 			tgbotapi.NewInlineKeyboardButtonData("✅ Разбанить", "menu_unban"),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("📊 Статистика", "menu_stats"),
 		),
 	)
 	b.sendOrEditMessage(chatID, messageID, "👥 Пользователи", &markup)
@@ -1072,6 +1380,7 @@ func (b *Bot) sendMenuBroadcast(chatID int64, messageID int) {
 func (b *Bot) sendMenuPanel(chatID int64, messageID int) {
 	markup := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🩺 Статус сервера", "menu_server_status"),
 			tgbotapi.NewInlineKeyboardButtonData("🔄 Синхронизация", "menu_sync"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
@@ -1094,17 +1403,19 @@ func (b *Bot) sendWelcomeMessage(chatID int64) {
 func (b *Bot) sendHelp(chatID int64, isOwner bool) {
 	var help string
 	if isOwner {
-		help = "👑 Команды владельца:\n" +
-			"• Список пользователей — просмотр всех\n" +
-			"• Отправить сообщение — выбор через меню\n" +
-			"• Отправить всем — рассылка текстового сообщения\n" +
-			"• Отправить медиа — рассылка фото/файлов\n" +
-			"• Удалить пользователя — исключение из базы"
+		help = "👑 <b>Команды администратора:</b>\n\n" +
+			"• <b>/find &lt;запрос&gt;</b> — быстрый поиск юзера\n" +
+			"• <b>Ответ (Reply)</b> на сообщение юзера — отправляет ответ сразу в личку\n" +
+			"• <b>Список пользователей</b> — просмотр всех и их статуса\n" +
+			"• <b>Рассылка</b> — текст или фото/видео всем клиентам\n" +
+			"• <b>Статус сервера</b> — нагрузка CPU, RAM, диск и Xray в панели"
 	} else {
-		help = "📖 Доступные кнопки:\n" +
-			"• Указать имя — задать ваше имя для владельца\n" +
-			"• Моё имя — посмотреть текущее имя\n" +
-			"• Помощь — эта справка"
+		help = "📖 <b>Доступные функции:</b>\n\n" +
+			"• <b>📊 Моя подписка</b> — остаток дней, использованный трафик и статус\n" +
+			"• <b>🔑 Мои ключи</b> — QR-код и ссылки для подключения\n" +
+			"• <b>📖 Как настроить</b> — инструкция по установке для Android, iOS, Windows, Mac\n" +
+			"• <b>Указать имя</b> — задать имя, чтобы администратор знал, чей это аккаунт\n" +
+			"• Напишите любое сообщение в чат бота, чтобы связаться с администратором."
 	}
 	b.sendMessage(chatID, help)
 }
@@ -1173,12 +1484,16 @@ func (b *Bot) sendMessageWithKeyboard(chatID int64, text string, withUserKeyboar
 func (b *Bot) getUserKeyboard() tgbotapi.ReplyKeyboardMarkup {
 	kb := tgbotapi.NewReplyKeyboard(
 		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton(BtnMySubscription),
+			tgbotapi.NewKeyboardButton(BtnMyKeys),
+		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton(BtnSetupGuide),
 			tgbotapi.NewKeyboardButton(BtnHelp),
-			tgbotapi.NewKeyboardButton(BtnSetName),
 		),
 		tgbotapi.NewKeyboardButtonRow(
 			tgbotapi.NewKeyboardButton(BtnMyName),
-			tgbotapi.NewKeyboardButton(BtnMyKeys),
+			tgbotapi.NewKeyboardButton(BtnSetName),
 		),
 	)
 	kb.ResizeKeyboard = true

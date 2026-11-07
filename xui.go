@@ -368,3 +368,59 @@ func (x *XuiClient) DownloadDB() (string, error) {
 
 	return tmpFile.Name(), nil
 }
+
+type ServerStatus struct {
+	CPU         float64
+	MemCurrent  int64
+	MemTotal    int64
+	DiskCurrent int64
+	DiskTotal   int64
+	XrayState   string
+	XrayVersion string
+	Uptime      int64
+}
+
+func (x *XuiClient) GetServerStatus() (*ServerStatus, error) {
+	data, err := x.makeRequest("POST", "/server/status", nil)
+	if err != nil {
+		data, err = x.makeRequest("GET", "/panel/api/server/status", nil)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var res struct {
+		Success bool `json:"success"`
+		Obj     struct {
+			CPU  float64 `json:"cpu"`
+			Mem  struct {
+				Current int64 `json:"current"`
+				Total   int64 `json:"total"`
+			} `json:"mem"`
+			Disk struct {
+				Current int64 `json:"current"`
+				Total   int64 `json:"total"`
+			} `json:"disk"`
+			Xray struct {
+				State   string `json:"state"`
+				Version string `json:"version"`
+			} `json:"xray"`
+			Uptime int64 `json:"uptime"`
+		} `json:"obj"`
+	}
+
+	if err := json.Unmarshal(data, &res); err != nil {
+		return nil, err
+	}
+
+	return &ServerStatus{
+		CPU:         res.Obj.CPU,
+		MemCurrent:  res.Obj.Mem.Current,
+		MemTotal:    res.Obj.Mem.Total,
+		DiskCurrent: res.Obj.Disk.Current,
+		DiskTotal:   res.Obj.Disk.Total,
+		XrayState:   res.Obj.Xray.State,
+		XrayVersion: res.Obj.Xray.Version,
+		Uptime:      res.Obj.Uptime,
+	}, nil
+}

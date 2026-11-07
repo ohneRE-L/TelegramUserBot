@@ -4,6 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	qrcode "github.com/skip2/go-qrcode"
 )
 
 func TestConfigLoadWithEnv(t *testing.T) {
@@ -151,5 +154,61 @@ func TestSaveAndReloadAtomic(t *testing.T) {
 	u, ok := storage2.Get(123)
 	if !ok || u.Name != "Tester" || u.XuiUsername != "tester_vpn" {
 		t.Errorf("User mismatch on reload: %+v", u)
+	}
+}
+
+func TestSearchAndExpiring(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "users_exp.json")
+
+	storage := NewStorage(path)
+	now := time.Now().UnixMilli()
+
+	storage.Set(&UserRecord{
+		ID:          1001,
+		Name:        "Alexey Ivanov",
+		TgUsername:  "alex_tg",
+		XuiUsername: "alex_xui",
+		ExpiryDate:  now + 3*24*60*60*1000, // 3 days
+	})
+	storage.Set(&UserRecord{
+		ID:          1002,
+		Name:        "Dmitry",
+		TgUsername:  "dmitry_tg",
+		XuiUsername: "dmitry_xui",
+		ExpiryDate:  now + 20*24*60*60*1000, // 20 days
+	})
+
+	// Test Search
+	found := storage.Search("Alexey")
+	if len(found) != 1 || found[0].ID != 1001 {
+		t.Errorf("Search by name failed: %v", found)
+	}
+
+	found = storage.Search("1001")
+	if len(found) != 1 || found[0].ID != 1001 {
+		t.Errorf("Search by ID failed: %v", found)
+	}
+
+	found = storage.Search("@alex_tg")
+	if len(found) != 1 || found[0].ID != 1001 {
+		t.Errorf("Search by @username failed: %v", found)
+	}
+
+	// Test Expiring within 7 days
+	expiring := storage.GetExpiring(7)
+	if len(expiring) != 1 || expiring[0].ID != 1001 {
+		t.Errorf("Expected 1 expiring user, got %d", len(expiring))
+	}
+}
+
+func TestQRCodeGeneration(t *testing.T) {
+	data := "https://example.com/sub/testuser"
+	png, err := qrcode.Encode(data, qrcode.Medium, 256)
+	if err != nil {
+		t.Fatalf("QRCode encode failed: %v", err)
+	}
+	if len(png) < 100 {
+		t.Errorf("QRCode PNG too small: %d bytes", len(png))
 	}
 }

@@ -5,9 +5,12 @@ import (
 	"errors"
 	"log"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type UserRecord struct {
@@ -180,4 +183,47 @@ func (s *Storage) TotalAndBanned() (total int, active int, banned int) {
 	}
 	active = total - banned
 	return
+}
+
+func (s *Storage) Search(query string) []*UserRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	q := strings.ToLower(strings.TrimSpace(query))
+	q = strings.TrimPrefix(q, "@")
+	if q == "" {
+		return nil
+	}
+
+	var res []*UserRecord
+	for _, u := range s.users {
+		if strings.Contains(strings.ToLower(u.Name), q) ||
+			strings.Contains(strings.ToLower(u.TgUsername), q) ||
+			strings.Contains(strings.ToLower(u.XuiUsername), q) ||
+			strconv.FormatInt(u.ID, 10) == q {
+			res = append(res, u)
+		}
+	}
+	return res
+}
+
+func (s *Storage) GetExpiring(withinDays int) []*UserRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	now := time.Now().UnixMilli()
+	maxTime := now + int64(withinDays)*24*60*60*1000
+
+	var res []*UserRecord
+	for _, u := range s.users {
+		if !u.Banned && u.ExpiryDate > 0 && u.ExpiryDate <= maxTime && (u.ExpiryDate-now) >= -86400000 {
+			res = append(res, u)
+		}
+	}
+
+	sort.Slice(res, func(i, j int) bool {
+		return res[i].ExpiryDate < res[j].ExpiryDate
+	})
+
+	return res
 }
