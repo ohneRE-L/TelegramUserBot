@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -210,5 +211,21 @@ func TestQRCodeGeneration(t *testing.T) {
 	}
 	if len(png) < 100 {
 		t.Errorf("QRCode PNG too small: %d bytes", len(png))
+	}
+}
+
+func TestParseSettingsClientsObjectAndString(t *testing.T) {
+	// Case 1: Settings is a native JSON object (newer 3x-ui)
+	rawObject := json.RawMessage(`{"clients": [{"email": "user1@vpn", "expiryTime": 1700000000}]}`)
+	sc1 := parseSettingsClients(rawObject)
+	if sc1 == nil || len(sc1.Clients) != 1 || sc1.Clients[0].Email != "user1@vpn" {
+		t.Fatalf("Failed to parse settings as JSON object: %+v", sc1)
+	}
+
+	// Case 2: Settings is an escaped JSON string (older 3x-ui / sqlite text)
+	rawString := json.RawMessage(`"{\"clients\": [{\"email\": \"user2@vpn\", \"expiryTime\": 1800000000}]}"`)
+	sc2 := parseSettingsClients(rawString)
+	if sc2 == nil || len(sc2.Clients) != 1 || sc2.Clients[0].Email != "user2@vpn" {
+		t.Fatalf("Failed to parse settings as JSON string: %+v", sc2)
 	}
 }

@@ -157,9 +157,9 @@ func (x *XuiClient) makeRequest(method, path string, body io.Reader) ([]byte, er
 }
 
 type inboundRaw struct {
-	ID          int    `json:"id"`
-	Port        int    `json:"port"`
-	Settings    string `json:"settings"`
+	ID          int             `json:"id"`
+	Port        int             `json:"port"`
+	Settings    json.RawMessage `json:"settings"`
 	ClientStats []struct {
 		Email      string `json:"email"`
 		ExpiryTime int64  `json:"expiryTime"`
@@ -171,6 +171,28 @@ type settingsClients struct {
 		Email      string `json:"email"`
 		ExpiryTime int64  `json:"expiryTime"`
 	} `json:"clients"`
+}
+
+func parseSettingsClients(raw json.RawMessage) *settingsClients {
+	if len(raw) == 0 {
+		return nil
+	}
+
+	var sc settingsClients
+	// Try parsing directly as JSON object
+	if err := json.Unmarshal(raw, &sc); err == nil && len(sc.Clients) > 0 {
+		return &sc
+	}
+
+	// Try parsing as JSON string (escaped JSON)
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil && str != "" {
+		if err := json.Unmarshal([]byte(str), &sc); err == nil {
+			return &sc
+		}
+	}
+
+	return &sc
 }
 
 func (x *XuiClient) GetAllClientsExpiry() (map[string]int64, error) {
@@ -202,14 +224,11 @@ func (x *XuiClient) GetAllClientsExpiry() (map[string]int64, error) {
 		}
 
 		// 2. Scan settings clients
-		if in.Settings != "" {
-			var sc settingsClients
-			if err := json.Unmarshal([]byte(in.Settings), &sc); err == nil {
-				for _, c := range sc.Clients {
-					if c.Email != "" {
-						if cur, ok := clients[c.Email]; !ok || cur == 0 {
-							clients[c.Email] = c.ExpiryTime
-						}
+		if sc := parseSettingsClients(in.Settings); sc != nil {
+			for _, c := range sc.Clients {
+				if c.Email != "" {
+					if cur, ok := clients[c.Email]; !ok || cur == 0 {
+						clients[c.Email] = c.ExpiryTime
 					}
 				}
 			}
@@ -258,14 +277,11 @@ func (x *XuiClient) FindInboundIDsByEmail(email string) ([]int, error) {
 
 	var ids []int
 	for _, in := range res.Obj {
-		if in.Settings != "" {
-			var sc settingsClients
-			if err := json.Unmarshal([]byte(in.Settings), &sc); err == nil {
-				for _, c := range sc.Clients {
-					if c.Email == email {
-						ids = append(ids, in.ID)
-						break
-					}
+		if sc := parseSettingsClients(in.Settings); sc != nil {
+			for _, c := range sc.Clients {
+				if c.Email == email {
+					ids = append(ids, in.ID)
+					break
 				}
 			}
 		}
