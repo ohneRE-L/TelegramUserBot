@@ -26,12 +26,24 @@ type Config struct {
 func LoadConfig() (*Config, error) {
 	props := make(map[string]string)
 
+	execDir := ""
+	if execPath, err := os.Executable(); err == nil {
+		execDir = filepath.Dir(execPath)
+	}
+
 	candidates := []string{
 		"config.properties",
+		filepath.Join(execDir, "config.properties"),
+		"/bots/sendBot/config.properties",
 		filepath.Join("src", "main", "resources", "config.properties"),
+		filepath.Join(execDir, "src", "main", "resources", "config.properties"),
+		"/bots/sendBot/src/main/resources/config.properties",
 	}
 
 	for _, path := range candidates {
+		if path == "" {
+			continue
+		}
 		if file, err := os.Open(path); err == nil {
 			scanner := bufio.NewScanner(file)
 			for scanner.Scan() {

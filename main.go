@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -22,7 +23,22 @@ func main() {
 		log.Fatalf("bot.token and owner.id are required in config.properties or environment!")
 	}
 
-	storage := NewStorage("users.json")
+	usersPath := "users.json"
+	if _, err := os.Stat(usersPath); os.IsNotExist(err) {
+		if execPath, err := os.Executable(); err == nil {
+			p := filepath.Join(filepath.Dir(execPath), "users.json")
+			if _, err := os.Stat(p); err == nil {
+				usersPath = p
+			}
+		}
+		if _, err := os.Stat(usersPath); os.IsNotExist(err) {
+			if _, err := os.Stat("/bots/sendBot/users.json"); err == nil {
+				usersPath = "/bots/sendBot/users.json"
+			}
+		}
+	}
+
+	storage := NewStorage(usersPath)
 	if err := storage.Load(); err != nil {
 		log.Printf("Warning: failed to load users.json: %v", err)
 	}
