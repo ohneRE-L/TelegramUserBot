@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -40,6 +41,10 @@ func NewXuiClient(panelURL, username, password, apiToken string, subPort int, su
 		cleanSubPath += "/"
 	}
 
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+
 	return &XuiClient{
 		panelURL:    cleanURL,
 		username:    username,
@@ -49,8 +54,9 @@ func NewXuiClient(panelURL, username, password, apiToken string, subPort int, su
 		subPath:     cleanSubPath,
 		inboundPort: inboundPort,
 		client: &http.Client{
-			Jar:     jar,
-			Timeout: 15 * time.Second,
+			Jar:       jar,
+			Transport: tr,
+			Timeout:   15 * time.Second,
 		},
 	}
 }
