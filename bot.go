@@ -6,6 +6,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -144,6 +145,31 @@ func (b *Bot) Start(ctx context.Context) {
 	}
 }
 
+var userPattern = regexp.MustCompile(`\((\d{5,15})\)`)
+
+func (b *Bot) extractTargetIDFromMessage(replyMsg *tgbotapi.Message) int64 {
+	if replyMsg == nil {
+		return 0
+	}
+	if replyMsg.ForwardFrom != nil && replyMsg.ForwardFrom.ID != b.config.OwnerID {
+		return replyMsg.ForwardFrom.ID
+	}
+	text := replyMsg.Text
+	if text == "" {
+		text = replyMsg.Caption
+	}
+	if text != "" {
+		matches := userPattern.FindStringSubmatch(text)
+		if len(matches) > 1 {
+			id, err := strconv.ParseInt(matches[1], 10, 64)
+			if err == nil && id != b.config.OwnerID {
+				return id
+			}
+		}
+	}
+	return 0
+}
+
 func (b *Bot) handleUpdate(update tgbotapi.Update) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -208,10 +234,30 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 		targetID, ok := b.replyMap[msg.ReplyToMessage.MessageID]
 		b.replyMu.RUnlock()
 
+		if !ok {
+			targetID = b.extractTargetIDFromMessage(msg.ReplyToMessage)
+			if targetID > 0 {
+				ok = true
+			}
+		}
+
 		if ok {
+			targetName := fmt.Sprintf("%d", targetID)
+			if u, exists := b.storage.Get(targetID); exists && u.Name != "" {
+				targetName = fmt.Sprintf("%s (%d)", u.Name, targetID)
+			}
+
 			if msg.Text != "" {
-				b.sendToUser(targetID, msg.Text)
-				b.sendMessage(msg.Chat.ID, fmt.Sprintf("✅ Ответ отправлен пользователю: %s", msg.Text))
+				if err := b.sendToUser(targetID, msg.Text); err != nil {
+					b.sendMessage(msg.Chat.ID, fmt.Sprintf("❌ Ошибка отправки пользователю %s: %s", targetName, err.Error()))
+				} else {
+					sentMsg, _ := b.sendMessageEx(msg.Chat.ID, fmt.Sprintf("✅ Ответ отправлен пользователю %s", targetName))
+					if sentMsg.MessageID > 0 {
+						b.replyMu.Lock()
+						b.replyMap[sentMsg.MessageID] = targetID
+						b.replyMu.Unlock()
+					}
+				}
 				return
 			} else if len(msg.Photo) > 0 || msg.Document != nil {
 				b.handleSendMedia(msg, targetID)
@@ -321,8 +367,15 @@ func (b *Bot) handleUserMessage(msg *tgbotapi.Message, session *UserSession) {
 			if session.TargetUserID == -1 {
 				b.handleSendToAllAsync(text, chatID)
 			} else {
-				b.sendToUser(session.TargetUserID, text)
-				b.sendMessage(chatID, fmt.Sprintf("Сообщение отправлено пользователю %d", session.TargetUserID))
+				targetName := fmt.Sprintf("%d", session.TargetUserID)
+				if u, ok := b.storage.Get(session.TargetUserID); ok && u.Name != "" {
+					targetName = fmt.Sprintf("%s (%d)", u.Name, session.TargetUserID)
+				}
+				if err := b.sendToUser(session.TargetUserID, text); err != nil {
+					b.sendMessage(chatID, fmt.Sprintf("❌ Ошибка отправки пользователю %s: %s", targetName, err.Error()))
+				} else {
+					b.sendMessage(chatID, fmt.Sprintf("✅ Сообщение отправлено пользователю %s", targetName))
+				}
 			}
 			session.State = StateStart
 		}
@@ -408,8 +461,11 @@ func (b *Bot) handleUserMessage(msg *tgbotapi.Message, session *UserSession) {
 			if bestMatch != nil {
 				directMsg := strings.TrimSpace(text[len(bestMatch.Name):])
 				if directMsg != "" {
-					b.sendToUser(bestMatch.ID, directMsg)
-					b.sendMessage(chatID, fmt.Sprintf("Сообщение отправлено пользователю %s", bestMatch.Name))
+					if err := b.sendToUser(bestMatch.ID, directMsg); err != nil {
+						b.sendMessage(chatID, fmt.Sprintf("❌ Ошибка отправки пользователю %s: %s", bestMatch.Name, err.Error()))
+					} else {
+						b.sendMessage(chatID, fmt.Sprintf("✅ Сообщение отправлено пользователю %s", bestMatch.Name))
+					}
 				} else {
 					b.sendMessage(chatID, fmt.Sprintf("Вы не ввели текст сообщения для %s", bestMatch.Name))
 				}
@@ -447,23 +503,33 @@ func (b *Bot) forwardToOwner(msg *tgbotapi.Message) {
 }
 
 func (b *Bot) handleSendMedia(msg *tgbotapi.Message, targetUserID int64) {
+	targetName := fmt.Sprintf("%d", targetUserID)
+	if u, exists := b.storage.Get(targetUserID); exists && u.Name != "" {
+		targetName = fmt.Sprintf("%s (%d)", u.Name, targetUserID)
+	}
+
 	if len(msg.Photo) > 0 {
 		highest := msg.Photo[len(msg.Photo)-1]
 		photo := tgbotapi.NewPhoto(targetUserID, tgbotapi.FileID(highest.FileID))
 		photo.Caption = msg.Caption
 		if _, err := b.api.Send(photo); err != nil {
-			b.sendMessage(msg.Chat.ID, "Ошибка отправки фото: "+err.Error())
+			b.sendMessage(msg.Chat.ID, fmt.Sprintf("❌ Ошибка отправки фото пользователю %s: %s", targetName, err.Error()))
 			return
 		}
 	} else if msg.Document != nil {
 		doc := tgbotapi.NewDocument(targetUserID, tgbotapi.FileID(msg.Document.FileID))
 		doc.Caption = msg.Caption
 		if _, err := b.api.Send(doc); err != nil {
-			b.sendMessage(msg.Chat.ID, "Ошибка отправки документа: "+err.Error())
+			b.sendMessage(msg.Chat.ID, fmt.Sprintf("❌ Ошибка отправки документа пользователю %s: %s", targetName, err.Error()))
 			return
 		}
 	}
-	b.sendMessage(msg.Chat.ID, fmt.Sprintf("Медиа отправлено пользователю %d", targetUserID))
+	sentMsg, _ := b.sendMessageEx(msg.Chat.ID, fmt.Sprintf("✅ Медиа отправлено пользователю %s", targetName))
+	if sentMsg.MessageID > 0 {
+		b.replyMu.Lock()
+		b.replyMap[sentMsg.MessageID] = targetUserID
+		b.replyMu.Unlock()
+	}
 }
 
 func (b *Bot) handleBroadcastMedia(msg *tgbotapi.Message) {
@@ -1420,16 +1486,21 @@ func (b *Bot) sendHelp(chatID int64, isOwner bool) {
 	b.sendMessage(chatID, help)
 }
 
-func (b *Bot) sendToUser(userID int64, text string) {
+func (b *Bot) sendToUser(userID int64, text string) error {
 	msg := tgbotapi.NewMessage(userID, text)
 	msg.ParseMode = "HTML"
 	if _, err := b.api.Send(msg); err != nil {
-		log.Printf("Failed to send to user %d: %v", userID, err)
-		errStr := err.Error()
-		if strings.Contains(errStr, "blocked") || strings.Contains(errStr, "deactivated") {
-			b.storage.Delete(userID)
+		msg.ParseMode = ""
+		if _, err2 := b.api.Send(msg); err2 != nil {
+			log.Printf("Failed to send to user %d: %v", userID, err2)
+			errStr := err2.Error()
+			if strings.Contains(errStr, "blocked") || strings.Contains(errStr, "deactivated") {
+				b.storage.Delete(userID)
+			}
+			return err2
 		}
 	}
+	return nil
 }
 
 func (b *Bot) SendMessage(chatID int64, text string) error {
@@ -1440,7 +1511,11 @@ func (b *Bot) SendMessage(chatID int64, text string) error {
 }
 
 func (b *Bot) sendMessage(chatID int64, text string) {
-	b.sendMessageWithKeyboard(chatID, text, true)
+	_, _ = b.sendMessageWithKeyboard(chatID, text, true)
+}
+
+func (b *Bot) sendMessageEx(chatID int64, text string) (tgbotapi.Message, error) {
+	return b.sendMessageWithKeyboard(chatID, text, true)
 }
 
 func (b *Bot) notifyOwner(text string) {
@@ -1468,7 +1543,7 @@ func (b *Bot) sendOrEditMessage(chatID int64, messageID int, text string, markup
 	_, _ = b.api.Send(msg)
 }
 
-func (b *Bot) sendMessageWithKeyboard(chatID int64, text string, withUserKeyboard bool) {
+func (b *Bot) sendMessageWithKeyboard(chatID int64, text string, withUserKeyboard bool) (tgbotapi.Message, error) {
 	msg := tgbotapi.NewMessage(chatID, text)
 	msg.ParseMode = "HTML"
 	if chatID == b.config.OwnerID {
@@ -1476,9 +1551,15 @@ func (b *Bot) sendMessageWithKeyboard(chatID int64, text string, withUserKeyboar
 	} else if withUserKeyboard {
 		msg.ReplyMarkup = b.getUserKeyboard()
 	}
-	if _, err := b.api.Send(msg); err != nil {
-		log.Printf("Failed to send message to %d: %v", chatID, err)
+	sent, err := b.api.Send(msg)
+	if err != nil {
+		msg.ParseMode = ""
+		sent, err = b.api.Send(msg)
+		if err != nil {
+			log.Printf("Failed to send message to %d: %v", chatID, err)
+		}
 	}
+	return sent, err
 }
 
 func (b *Bot) getUserKeyboard() tgbotapi.ReplyKeyboardMarkup {

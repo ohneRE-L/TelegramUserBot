@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	qrcode "github.com/skip2/go-qrcode"
 )
 
@@ -227,5 +228,43 @@ func TestParseSettingsClientsObjectAndString(t *testing.T) {
 	sc2 := parseSettingsClients(rawString)
 	if sc2 == nil || len(sc2.Clients) != 1 || sc2.Clients[0].Email != "user2@vpn" {
 		t.Fatalf("Failed to parse settings as JSON string: %+v", sc2)
+	}
+}
+
+func TestExtractTargetIDFromMessage(t *testing.T) {
+	b := &Bot{
+		config: &Config{OwnerID: 5516363342},
+	}
+
+	// 1. Text message forwarded format
+	msg1 := &tgbotapi.Message{
+		Text: "📩 [От Family (390055137)]:\ntest",
+	}
+	if id := b.extractTargetIDFromMessage(msg1); id != 390055137 {
+		t.Errorf("Expected 390055137, got %d", id)
+	}
+
+	// 2. Confirmation format
+	msg2 := &tgbotapi.Message{
+		Text: "✅ Ответ отправлен пользователю Family (390055137)",
+	}
+	if id := b.extractTargetIDFromMessage(msg2); id != 390055137 {
+		t.Errorf("Expected 390055137, got %d", id)
+	}
+
+	// 3. Caption on media
+	msg3 := &tgbotapi.Message{
+		Caption: "📩 [От Ruslan (12345678)]:",
+	}
+	if id := b.extractTargetIDFromMessage(msg3); id != 12345678 {
+		t.Errorf("Expected 12345678, got %d", id)
+	}
+
+	// 4. Ignores owner ID
+	msg4 := &tgbotapi.Message{
+		Text: "📩 [От Ruslan (5516363342)]:",
+	}
+	if id := b.extractTargetIDFromMessage(msg4); id != 0 {
+		t.Errorf("Expected 0 (ignored owner ID), got %d", id)
 	}
 }
