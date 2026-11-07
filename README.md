@@ -2,7 +2,7 @@
 
 ## Введение
 
-TelegramUserBot — это мощный Telegram-бот на Java с использованием библиотеки TelegramBots. Бот идеально подходит для управления базой VPN-пользователей и автоматической рассылки.
+TelegramUserBot — это мощный Telegram-бот на Go. Бот идеально подходит для управления базой VPN-пользователей и автоматической рассылки.
 
 **Основные возможности:**
 - 💾 Сохранение базы пользователей в `users.json` без потерь при перезагрузке.
@@ -22,7 +22,7 @@ TelegramUserBot — это мощный Telegram-бот на Java с испол�
 
 ### 1. Конфигурация (`config.properties`)
 
-Создайте или откройте файл `src/main/resources/config.properties`:
+Скопируйте `config.properties.example` в `config.properties` и укажите данные:
 
 ```properties
 # Telegram Bot Configuration
@@ -53,10 +53,13 @@ xui.notify.days=3,1,0
 ### 2. Сборка и запуск
 
 ```bash
-mvn clean package
-java -cp target/telegram-userbot-1.0-SNAPSHOT-jar-with-dependencies.jar com.example.TelegramUserBot
+# Локальный запуск
+go run .
+
+# Сборка бинарника для Linux VPS:
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o bot .
 ```
-В Linux рекомендуется запускать как systemd-сервис.
+В Linux рекомендуется запускать как systemd-сервис (`/etc/systemd/system/sendBot.service`).
 
 ---
 

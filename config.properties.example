@@ -1,0 +1,21 @@
+# Telegram Bot Configuration
+bot.token=ВАШ_ТОКЕН_БОТА
+owner.id=ВАШ_ID_ВЛАДЕЛЬЦА
+bot.username=@ИМЯ_ВАШЕГО_БОТА
+
+# 3x-ui Panel Configuration
+xui.panel.url=https://your-domain.com:54321/custom-path
+xui.panel.username=admin
+xui.panel.password=your_password
+xui.api.token=ТОКЕН_ИЗ_НАСТРОЕК_БЕЗОПАСНОСТИ_ПАНЕЛИ
+xui.sub.port=10443
+xui.sub.path=/sub/your-custom-sub-path/
+
+# Как часто проверять срок ключей (в часах)
+xui.check.interval.hours=6
+
+# За сколько дней до конца отправлять уведомление (через запятую)
+xui.notify.days=3,1,0
+
+# Фильтр по инбаунду: только клиенты с этого порта (закомментируйте для всех)
+# xui.inbound.port=443

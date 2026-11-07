@@ -90,10 +90,14 @@ func (b *Bot) getSession(userID int64) *UserSession {
 }
 
 func (b *Bot) Start(ctx context.Context) {
-	// Delete commands on start
-	delCmds := tgbotapi.NewDeleteMyCommands()
-	if _, err := b.api.Request(delCmds); err != nil {
-		log.Printf("Failed to delete bot commands: %v", err)
+	// Set bot commands for Telegram Menu button
+	commands := tgbotapi.NewSetMyCommands(
+		tgbotapi.BotCommand{Command: "start", Description: "Главное меню"},
+		tgbotapi.BotCommand{Command: "menu", Description: "Показать кнопки управления"},
+		tgbotapi.BotCommand{Command: "help", Description: "Справка"},
+	)
+	if _, err := b.api.Request(commands); err != nil {
+		log.Printf("Failed to set bot commands: %v", err)
 	}
 
 	if b.checker != nil {
@@ -218,6 +222,10 @@ func (b *Bot) handleOwnerCommand(msg *tgbotapi.Message) {
 	session := b.getSession(b.config.OwnerID)
 
 	switch text {
+	case "/start", "/menu":
+		b.sendWelcomeMessage(chatID)
+	case "/help":
+		b.sendHelp(chatID, true)
 	case "🔄 Синхронизация 3x-ui":
 		b.handleSyncCommand(chatID, 0)
 	case BtnMenuUsers:
@@ -256,6 +264,8 @@ func (b *Bot) handleOwnerCommand(msg *tgbotapi.Message) {
 	case BtnCancel:
 		session.State = StateStart
 		b.sendMessage(chatID, "Действие отменено.")
+	default:
+		b.sendWelcomeMessage(chatID)
 	}
 }
 
@@ -1072,7 +1082,12 @@ func (b *Bot) sendMenuPanel(chatID int64, messageID int) {
 }
 
 func (b *Bot) sendWelcomeMessage(chatID int64) {
-	welcome := "👋 Добро пожаловать!\nЯ бот для рассылки уведомлений. Используйте кнопки или /help для справки."
+	var welcome string
+	if chatID == b.config.OwnerID {
+		welcome = "👋 Панель управления ботом.\nИспользуйте кнопки меню ниже:"
+	} else {
+		welcome = "👋 Добро пожаловать!\nЯ бот для уведомлений и доступа к VPN. Используйте кнопки ниже или /help для справки."
+	}
 	b.sendMessageWithKeyboard(chatID, welcome, true)
 }
 
@@ -1114,7 +1129,7 @@ func (b *Bot) SendMessage(chatID int64, text string) error {
 }
 
 func (b *Bot) sendMessage(chatID int64, text string) {
-	b.sendMessageWithKeyboard(chatID, text, false)
+	b.sendMessageWithKeyboard(chatID, text, true)
 }
 
 func (b *Bot) notifyOwner(text string) {
@@ -1156,7 +1171,7 @@ func (b *Bot) sendMessageWithKeyboard(chatID int64, text string, withUserKeyboar
 }
 
 func (b *Bot) getUserKeyboard() tgbotapi.ReplyKeyboardMarkup {
-	return tgbotapi.NewReplyKeyboard(
+	kb := tgbotapi.NewReplyKeyboard(
 		tgbotapi.NewKeyboardButtonRow(
 			tgbotapi.NewKeyboardButton(BtnHelp),
 			tgbotapi.NewKeyboardButton(BtnSetName),
@@ -1166,10 +1181,12 @@ func (b *Bot) getUserKeyboard() tgbotapi.ReplyKeyboardMarkup {
 			tgbotapi.NewKeyboardButton(BtnMyKeys),
 		),
 	)
+	kb.ResizeKeyboard = true
+	return kb
 }
 
 func (b *Bot) getOwnerKeyboard() tgbotapi.ReplyKeyboardMarkup {
-	return tgbotapi.NewReplyKeyboard(
+	kb := tgbotapi.NewReplyKeyboard(
 		tgbotapi.NewKeyboardButtonRow(
 			tgbotapi.NewKeyboardButton(BtnMenuUsers),
 			tgbotapi.NewKeyboardButton(BtnMenuBroadcast),
@@ -1179,6 +1196,8 @@ func (b *Bot) getOwnerKeyboard() tgbotapi.ReplyKeyboardMarkup {
 			tgbotapi.NewKeyboardButton(BtnCancel),
 		),
 	)
+	kb.ResizeKeyboard = true
+	return kb
 }
 
 func formatTraffic(bytes int64) string {

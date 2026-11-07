@@ -45,4 +45,8 @@ jobs:
           port: 9049
           script: |
             chmod +x /bots/sendBot/bot
+            if [ -f /etc/systemd/system/sendBot.service ] && grep -q "java" /etc/systemd/system/sendBot.service 2>/dev/null; then
+              sudo sed -i 's|ExecStart=.*|ExecStart=/bots/sendBot/bot|' /etc/systemd/system/sendBot.service
+              sudo systemctl daemon-reload
+            fi
             sudo systemctl restart sendBot
